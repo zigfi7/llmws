@@ -97,6 +97,7 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
     past_key_values = None
     tokens_generated = 0
     last_token_time = asyncio.get_event_loop().time()
+    hspc=False
 
     while generated.size(1) < remaining_tokens:
         try:
@@ -130,12 +131,14 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
                     text = flush_id_buffer(websocket)
                     await safe_send(websocket, text)
 
-                # if token_str.startswith(space_token[0]) :
-                #     text = flush_id_buffer(websocket)
-                #     if token_str.startswith(space_token) :
-                #         text += " " if not text.endswith(" ") else ""
-                #         #text = " " + text if not text.startswith(" ") else text
-                #     await safe_send(websocket, text)
+                if hspc and token_str.startswith(space_token[0]):
+                    text = flush_id_buffer(websocket)
+                    text = " " + text
+                    hspc=False
+                    await safe_send(websocket, text)
+
+                if len(space_token)>1 and token_str.endswith(space_token[0]):
+                    hspc=True
 
                 tokens_generated += 1
                 last_token_time = asyncio.get_event_loop().time()
