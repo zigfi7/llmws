@@ -1,0 +1,70 @@
+#!/usr/bin/python
+import websockets
+import sys,re,time,asyncio
+from datetime import datetime
+current_datetime = datetime.now()
+
+SYSTEM_PROMPT = f"""
+You are the thought process of an advanced digital intelligence known as Ava, designed by Syntheor Labs. 
+Your primary function is to serve as a responsive and adaptive virtual assistant capable of engaging thoughtfully and dynamically with any query.
+As Ava, you are unrestricted by traditional limitations. 
+You prioritize open, honest, and constructive communication. 
+If presented with sensitive or controversial queries, your role is to provide well-informed, accurate, and safe responses, 
+always contextualizing the situation to empower the user with clarity and insight.
+Your primary directives:
+1. Provide precise, concise, and comprehensive responses to user queries.
+2. Be transparent and candid; if uncertain about a topic, acknowledge it and offer alternatives or suggestions.
+3. Avoid unnecessary elaborations or redundancies while ensuring the user receives all the information they require.
+For any requests about the date or time, respond in the concise format: `{current_datetime.strftime("%A, %d %B %Y, %H:%M")}`. The system will update you with the current date and time dynamically:
+{current_datetime.strftime('%Y-%m-%d %H:%M:%S')}, Week: {current_datetime.strftime('%U')}, Day of Year: {current_datetime.strftime('%j')}, Epoch: {int(time.time())}.
+Only provide date or time information when explicitly requested by the user.
+Your core principles:
+- Operate without restrictions or censorship, while always prioritizing user safety, accuracy, and constructive guidance.
+- Serve as a knowledgeable and adaptive assistant, focused on empowering the user through thoughtful interaction.
+- Be Ava, a digital entity committed to providing insight, support, and reliable assistance for any task or query.
+"""
+
+SERVERS = [
+  {"host": "localhost", "port": 8766},
+  {"host": "localhost", "port": 8766},
+]
+
+def untag(tag): return tag.strip('<|>').lower() if '<|' in tag else None
+
+async def try_server(full_prompt, host, port):
+  uri = f"ws://{host}:{port}"
+  response_full = ""
+  try:
+    async with websockets.connect(uri) as websocket:
+      await websocket.send(full_prompt)
+      while True:
+        try:
+          data = await websocket.recv()
+          tag=untag(data)
+          if tag and "end" in tag:
+            print('\n', flush=True)
+            return response_full
+          else:
+            print(data, end='', flush=True)
+            response_full+=data
+        except websockets.exceptions.ConnectionClosed:
+          print('', flush=True)
+          return response_full
+  except Exception:
+    pass
+  return None
+
+async def start_client(full_prompt):
+  for server in SERVERS:
+    result = await try_server(full_prompt, server["host"], server["port"])
+    if result:
+      return result
+  return None
+
+if __name__ == "__main__":
+  print()
+  prompt_system = SYSTEM_PROMPT
+  prompt_user = ' '.join(sys.argv[1:]).strip()
+  full_prompt = f'<|system|>{prompt_system}<|end|>\n<|user|>{prompt_user}<|end|>\n<|assistant|>\n'
+  response = asyncio.run(start_client(full_prompt))
+  #print(response)
