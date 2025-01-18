@@ -1,0 +1,15 @@
+[Unit]
+Description=WebSocket LLM Service
+After=network.target
+
+[Service]
+# User=your-user
+WorkingDirectory=/opt/llm/
+ExecStart=/bin/bash /opt/llm/start_mamba.sh
+Restart=always
+RestartSec=5
+#Environment="PATH=/usr/local/bin:/usr/bin:/bin:/opt/llm/micromamba/bin"
+#Environment="MAMBA_ROOT_PREFIX=/opt/llm/micromamba/root"
+
+[Install]
+WantedBy=multi-user.target

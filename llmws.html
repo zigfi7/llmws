@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSockets LLM</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #003300;
+            background-image: url("data:image/svg+xml,%3Csvg version='1.1' xmlns='http://www.w3.org/2000/svg' height=' 36 ' width=' 20 '%3E%3Cpolyline points=' 0 0 , 0 6 , 10 12 , 20 6 , 20 0 , ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3Cpolyline points=' 0 36 , 0 30 , 10 24 , 20 30 , 20 36 , ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3Cpolyline points=' 0 6 , 10 12 , 10 24 , 0 30 ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3Cpolyline points=' 20 6 , 10 12 , 10 24 , 20 30 ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3C/svg%3E%0A"); background-repeat: repeat;
+            color: #e0e0e0;
+            margin: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        }
+        h1, h2 {
+            color: #00ff00;
+        }
+        form {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin: 10px 0 5px;
+            color: #c7c7c7;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #333;
+            border-radius: 4px;
+            background-color: #004d00;
+            color: #e0e0e0;
+        }
+        input[type="text"]:focus, textarea:focus {
+            border-color: #00ff00;
+            outline: none;
+            box-shadow: 0 0 5px #00ff00;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            background-color: #00ff00;
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        button:hover {
+            background-color: #00cc00;
+        }
+        textarea {
+            resize: vertical;
+        }
+        #responseArea {
+            background-color: #004d00;
+            border: 1px solid #333;
+            color: #e0e0e0;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSockets LLM</h1>
+    <form id="promptForm">
+        <label for="host">Host:</label>
+        <input type="text" id="host" value="127.0.0.1" required>
+
+        <label for="port">Port:</label>
+        <input type="text" id="port" value="8765" required>
+
+        <label for="promptSystem">System Prompt:</label>
+        <textarea id="promptSystem" rows="1" required>You are a helpful AI assistant. Keep your answers short and kind. Always give answers that are safe, inclusive, and helpful. Never give out information which could lead to harm.</textarea>
+
+        <label for="promptUser">User Prompt:</label>
+        <textarea id="promptUser" rows="5" required>How to get from London to Paris?</textarea>
+
+        <button type="submit">Send Prompt</button>
+    </form>
+
+    <h2>Response:</h2>
+    <textarea id="responseArea" rows="20" cols="80" readonly></textarea>
+
+    <script>
+        document.getElementById('promptForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const host = document.getElementById('host').value;
+            const port = document.getElementById('port').value;
+            const promptSystem = document.getElementById('promptSystem').value;
+            const promptUser = document.getElementById('promptUser').value;
+            const responseArea = document.getElementById('responseArea');
+
+            // Construct the full prompt
+            const fullPrompt = `<|system|>${promptSystem}<|end|>\n<|user|>${promptUser}<|end|>\n<|assistant|>`;
+
+            responseArea.value = ''; // Clear previous responses
+
+            try {
+                const socket = new WebSocket(`ws://${host}:${port}`);
+
+                socket.onopen = () => {
+                    socket.send(fullPrompt);
+                };
+
+                socket.onmessage = (event) => {
+                    responseArea.value += event.data;
+                    responseArea.scrollTop = responseArea.scrollHeight; // Auto-scroll
+                };
+
+                socket.onerror = (error) => {
+                    responseArea.value = `WebSocket Error: ${error.message}`;
+                };
+
+                socket.onclose = () => {
+                    responseArea.value += '\n';
+                };
+            } catch (error) {
+                responseArea.value = `Error: ${error.message}`;
+            }
+        });
+    </script>
+</body>
+</html>
