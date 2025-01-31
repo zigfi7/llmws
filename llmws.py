@@ -45,8 +45,9 @@ def prompt2scheme(system_prompt, user_prompt):
   ]
   try:
     return tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-  except AttributeError:
-    return f"System: {system_prompt}\nUser: {user_prompt}"
+  except Exception as e:
+    sys_section = f"<<SYS>>\n{system_prompt}\n<</SYS>>\n\n" if system_prompt else ""
+    return f"[INST]{sys_section}{user_prompt}[/INST]"
 
 client_queues = defaultdict(list)
 processing_flags = defaultdict(bool)
@@ -57,6 +58,8 @@ collecting_tags = defaultdict(bool)
 async def load_model():
   global model, tokenizer, generation_config
   if model is None:
+    if torch.cuda.is_available():
+      torch.cuda.empty_cache()
     try:
       model = AutoModelForCausalLM.from_pretrained(
           model_path,
@@ -99,6 +102,12 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
   tokens_generated = 0
   last_token_time = asyncio.get_event_loop().time()
 
+  MULTILINGUAL_SEPARATORS = {
+    ' ', '\t', '\n',
+    ',', '.', '!', '?', ';', ':',
+    '，', '。', '！', '？', '；', '：', '、', '…', '—', '～', '-'
+  }
+
   while generated.size(1) < remaining_tokens:
     try:
       current_time = asyncio.get_event_loop().time()
@@ -107,9 +116,9 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
 
       with torch.no_grad():
         outputs = model(
-            input_ids=generated[:, -1:] if past_key_values else generated,
-            past_key_values=past_key_values,
-            use_cache=True
+          input_ids=generated[:, -1:] if past_key_values else generated,
+          past_key_values=past_key_values,
+          use_cache=True
         )
         past_key_values = outputs.past_key_values
         next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
@@ -118,7 +127,7 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
         current_id = next_token[0].item()
         token_str = tokenizer.convert_ids_to_tokens(current_id)
         tag = untag(token_str)
-        
+
         if next_token.item() == tokenizer.eos_token_id or (tag and "end" in tag):
           current_text = tokenizer.decode(id_buffers[websocket])
           new_text = current_text[sent_length[websocket]:]
@@ -131,18 +140,23 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
         id_buffers[websocket].append(current_id)
         current_text = tokenizer.decode(id_buffers[websocket])
         new_text = current_text[sent_length[websocket]:]
-        last_space_pos = new_text.rfind(' ')
 
-        if last_space_pos != -1:
-          to_send = new_text[:last_space_pos + 1]
+        last_separator_pos = -1
+        for i in reversed(range(len(new_text))):
+          if new_text[i] in MULTILINGUAL_SEPARATORS:
+            last_separator_pos = i + 1
+            break
+
+        if last_separator_pos != -1:
+          to_send = new_text[:last_separator_pos]
           await safe_send(websocket, to_send)
           sent_length[websocket] += len(to_send)
 
         tokens_generated += 1
-        last_token_time = asyncio.get_event_loop().time()
+        last_token_time = current_time
       await asyncio.sleep(0)
     except Exception as e:
-      print(f"Error during token generation: {str(e)}")
+      print(f"Token generation error: {str(e)}")
       raise
 
 async def process_queue(websocket):
