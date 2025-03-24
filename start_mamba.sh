@@ -28,13 +28,14 @@ fi
 micromamba activate myenv
 
 pip install --upgrade pip
-pip install --upgrade torch torchvision torchaudio
-pip install --upgrade "torch>=2.3.1"
-pip install --upgrade "accelerate>=0.31.0"
-pip install --upgrade "transformers>=4.43.0"
-pip install --upgrade "websockets"
-pip install --upgrade "flash_attn>=2.5.8"
-pip install --upgrade protobuf sentencepiece
+pip install torch torchvision torchaudio
+pip install "torch>=2.3.1"
+pip install "accelerate>=0.31.0"
+pip install "transformers>=4.43.0"
+pip install "websockets"
+pip install "flash_attn>=2.5.8"
+pip install protobuf sentencepiece
+pip install peft scipy backoff
 
 python llmws.py
 

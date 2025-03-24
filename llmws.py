@@ -8,6 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from transformers.utils import is_flash_attn_2_available
 
 ws_port = 8765
+#modeldir = 'Llama-3.1-Tulu-3-8B-SFT'
 modeldir = 'Phi-3.5-mini-instruct'
 
 model_path = os.path.join(os.getcwd(), 'models', modeldir)
@@ -61,14 +62,46 @@ async def load_model():
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
     try:
+      # If using flash attention, we need to ensure the model uses a compatible dtype
+      # Flash Attention 2.0 only supports fp16 and bf16
+      attn_implementation = None
+      torch_dtype = "auto"
+      
+      if use_flash_attention:
+        torch_dtype = torch.float16  # or could use torch.bfloat16 if the GPU supports it
+        attn_implementation = "flash_attention_2"
+      
+      print(f"Loading with dtype: {torch_dtype}, attention implementation: {attn_implementation}")
+      
       model = AutoModelForCausalLM.from_pretrained(
           model_path,
-          torch_dtype="auto",
+          torch_dtype=torch_dtype,
           device_map='auto',
           local_files_only=True,
           trust_remote_code=True,
-          attn_implementation="flash_attention_2" if use_flash_attention else None
+          attn_implementation=attn_implementation
       )
+      
+      # Get model information
+      model_config = model.config
+      model_type = getattr(model_config, '_name_or_path', modeldir)
+      model_architecture = model_config.__class__.__name__
+      model_params = sum(p.numel() for p in model.parameters())
+      model_params_in_billions = model_params / 1e9
+      
+      # Check quantization type
+      quant_info = "No quantization"
+      if hasattr(model_config, 'quantization_config') and model_config.quantization_config:
+          quant_info = f"Quantized: {model_config.quantization_config}"
+      elif hasattr(model, 'is_quantized') and model.is_quantized:
+          quant_info = "Model is quantized (method unspecified)"
+      
+      print(f"Model loaded: {modeldir}")
+      print(f"Architecture: {model_architecture}")
+      print(f"Parameters: {model_params_in_billions:.2f}B")
+      print(f"Quantization: {quant_info}")
+      print(f"Model dtype: {model.dtype}")
+      
       tokenizer = AutoTokenizer.from_pretrained(
           model_path,
           local_files_only=True,
@@ -97,7 +130,7 @@ async def safe_send(websocket, message):
     pass
 
 async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, remaining_tokens):
-  generated = inputs["input_ids"]
+  generated = inputs["input_ids"].to(model.device)  # Ensure inputs are on the correct device
   past_key_values = None
   tokens_generated = 0
   last_token_time = asyncio.get_event_loop().time()
@@ -108,56 +141,74 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
     '，', '。', '！', '？', '；', '：', '、', '…', '—', '～', '-'
   }
 
-  while generated.size(1) < remaining_tokens:
-    try:
-      current_time = asyncio.get_event_loop().time()
-      if tokens_generated == 0 and current_time - last_token_time > 5:
-        raise Exception("Token generation timeout")
+  # Only use autocast if we're using flash attention and on CUDA
+  use_autocast = use_flash_attention and torch.cuda.is_available()
+  
+  async def process_tokens():
+    nonlocal generated, past_key_values, tokens_generated, last_token_time
+    
+    while generated.size(1) < remaining_tokens:
+      try:
+        current_time = asyncio.get_event_loop().time()
+        if tokens_generated == 0 and current_time - last_token_time > 5:
+          raise Exception("Token generation timeout")
 
-      with torch.no_grad():
-        outputs = model(
-          input_ids=generated[:, -1:] if past_key_values else generated,
-          past_key_values=past_key_values,
-          use_cache=True
-        )
-        past_key_values = outputs.past_key_values
-        next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
-        generated = torch.cat((generated, next_token.unsqueeze(0)), dim=-1)
+        with torch.no_grad():
+          outputs = model(
+            input_ids=generated[:, -1:] if past_key_values else generated,
+            past_key_values=past_key_values,
+            use_cache=True
+          )
+          past_key_values = outputs.past_key_values
+          next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+          generated = torch.cat((generated, next_token.unsqueeze(0)), dim=-1)
 
-        current_id = next_token[0].item()
-        token_str = tokenizer.convert_ids_to_tokens(current_id)
-        tag = untag(token_str)
+          current_id = next_token[0].item()
+          token_str = tokenizer.convert_ids_to_tokens(current_id)
+          tag = untag(token_str)
 
-        if next_token.item() == tokenizer.eos_token_id or (tag and "end" in tag):
-          current_text = tokenizer.decode(id_buffers[websocket])
-          new_text = current_text[sent_length[websocket]:]
-          if new_text:
-            await safe_send(websocket, new_text)
-            sent_length[websocket] = len(current_text)
-          await websocket.close(code=1000)
-          break
-
-        id_buffers[websocket].append(current_id)
-        current_text = tokenizer.decode(id_buffers[websocket])
-        new_text = current_text[sent_length[websocket]:]
-
-        last_separator_pos = -1
-        for i in reversed(range(len(new_text))):
-          if new_text[i] in MULTILINGUAL_SEPARATORS:
-            last_separator_pos = i + 1
+          if next_token.item() == tokenizer.eos_token_id or (tag and "end" in tag):
+            current_text = tokenizer.decode(id_buffers[websocket])
+            new_text = current_text[sent_length[websocket]:]
+            if new_text:
+              await safe_send(websocket, new_text)
+              sent_length[websocket] = len(current_text)
+            await websocket.close(code=1000)
             break
 
-        if last_separator_pos != -1:
-          to_send = new_text[:last_separator_pos]
-          await safe_send(websocket, to_send)
-          sent_length[websocket] += len(to_send)
+          id_buffers[websocket].append(current_id)
+          current_text = tokenizer.decode(id_buffers[websocket])
+          new_text = current_text[sent_length[websocket]:]
 
-        tokens_generated += 1
-        last_token_time = current_time
-      await asyncio.sleep(0)
-    except Exception as e:
-      print(f"Token generation error: {str(e)}")
-      raise
+          last_separator_pos = -1
+          for i in reversed(range(len(new_text))):
+            if new_text[i] in MULTILINGUAL_SEPARATORS:
+              last_separator_pos = i + 1
+              break
+
+          if last_separator_pos != -1:
+            to_send = new_text[:last_separator_pos]
+            await safe_send(websocket, to_send)
+            sent_length[websocket] += len(to_send)
+
+          tokens_generated += 1
+          last_token_time = current_time
+        await asyncio.sleep(0)
+      except Exception as e:
+        print(f"Token generation error: {str(e)}")
+        raise
+  
+  try:
+    if use_autocast:
+      # Using the newer recommended approach
+      with torch.amp.autocast('cuda', dtype=model.dtype):
+        await process_tokens()
+    else:
+      # No autocast needed
+      await process_tokens()
+  except Exception as e:
+    print(f"Error in token processing: {str(e)}")
+    raise
 
 async def process_queue(websocket):
   while client_queues[websocket]:
