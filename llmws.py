@@ -8,8 +8,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from transformers.utils import is_flash_attn_2_available
 
 ws_port = 8765
-#modeldir = 'Llama-3.1-Tulu-3-8B-SFT'
-modeldir = 'Phi-3.5-mini-instruct'
+modeldir = 'Llama-3.1-Tulu-3-8B'
+#modeldir = 'Phi-3.5-mini-instruct'
 
 model_path = os.path.join(os.getcwd(), 'models', modeldir)
 
@@ -62,13 +62,11 @@ async def load_model():
     if torch.cuda.is_available():
       torch.cuda.empty_cache()
     try:
-      # If using flash attention, we need to ensure the model uses a compatible dtype
-      # Flash Attention 2.0 only supports fp16 and bf16
       attn_implementation = None
       torch_dtype = "auto"
       
       if use_flash_attention:
-        torch_dtype = torch.float16  # or could use torch.bfloat16 if the GPU supports it
+        torch_dtype = torch.float16
         attn_implementation = "flash_attention_2"
       
       print(f"Loading with dtype: {torch_dtype}, attention implementation: {attn_implementation}")
@@ -82,14 +80,12 @@ async def load_model():
           attn_implementation=attn_implementation
       )
       
-      # Get model information
       model_config = model.config
       model_type = getattr(model_config, '_name_or_path', modeldir)
       model_architecture = model_config.__class__.__name__
       model_params = sum(p.numel() for p in model.parameters())
       model_params_in_billions = model_params / 1e9
       
-      # Check quantization type
       quant_info = "No quantization"
       if hasattr(model_config, 'quantization_config') and model_config.quantization_config:
           quant_info = f"Quantized: {model_config.quantization_config}"
@@ -200,11 +196,9 @@ async def stream_tokens(model, tokenizer, inputs, generation_config, websocket, 
   
   try:
     if use_autocast:
-      # Using the newer recommended approach
       with torch.amp.autocast('cuda', dtype=model.dtype):
         await process_tokens()
     else:
-      # No autocast needed
       await process_tokens()
   except Exception as e:
     print(f"Error in token processing: {str(e)}")

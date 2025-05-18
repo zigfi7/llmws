@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 # User=your-user
-WorkingDirectory=/opt/llm/
-ExecStart=/bin/bash /opt/llm/start_mamba.sh
+WorkingDirectory=/opt/llmws/
+ExecStart=/bin/bash /opt/llmws/start_mamba.sh
 Restart=always
 RestartSec=5
 #Environment="PATH=/usr/local/bin:/usr/bin:/bin:/opt/llm/micromamba/bin"
