@@ -444,12 +444,21 @@ async def load_model(model_path: str):
         
         # Check CUDA
         compute_capability = check_cuda_compatibility()
-        use_flash_attention = (
-            torch.cuda.is_available() and
-            compute_capability[0] >= 8 and
-            is_flash_attn_2_available() and
-            CONFIG['optimization']['use_flash_attention']
-        )
+        
+        # Flash Attention support check
+        # Note: Flash Attention 2 binaries currently support up to SM 9.0
+        # Blackwell GB10 (SM 12.1) is not yet supported - waiting for flash-attn update
+        if compute_capability[0] >= 12:
+            print("⚠ Flash Attention not available for SM 12.x (Blackwell GB10)")
+            print("  Using standard attention (flash-attn needs rebuild for GB10)")
+            use_flash_attention = False
+        else:
+            use_flash_attention = (
+                torch.cuda.is_available() and
+                compute_capability[0] >= 8 and
+                is_flash_attn_2_available() and
+                CONFIG['optimization']['use_flash_attention']
+            )
         
         # Determine dtype
         if CONFIG['optimization']['dtype'] == 'auto':

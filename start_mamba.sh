@@ -26,20 +26,6 @@ if ! micromamba env list | grep -q "^myenv\s"; then
 fi
 
 micromamba activate myenv
-#micromamba install pytorch torchvision torchaudio pytorch-cuda=13 -c pytorch -c nvidia
-
-pip install --upgrade pip
-pip install --upgrade websockets
-pip install --upgrade peft scipy backoff
-pip install --upgrade protobuf sentencepiece
-
-pip install torch torchvision torchaudio numpy --index-url https://download.pytorch.org/whl/cu129
-pip install --upgrade accelerate
-pip install --upgrade transformers
-pip install --upgrade flash-attn
-# --use-pep517 --no-build-isolation
-
-python llmws_server.py
-#python llmws1.py
+/usr/bin/bash start.sh
 
 micromamba deactivate

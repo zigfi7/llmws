@@ -106,7 +106,11 @@ if [ "$CUDA_VERSION" != "none" ]; then
     COMPUTE_CAP=$(python3 -c "import torch; print(torch.cuda.get_device_capability(0) if torch.cuda.is_available() else (0,0))" 2>/dev/null | tr -d '(,) ')
     COMPUTE_MAJOR=$(echo $COMPUTE_CAP | awk '{print $1}')
     
-    if [ "$COMPUTE_MAJOR" -ge "8" ]; then
+    if [ "$COMPUTE_MAJOR" -ge "12" ]; then
+        echo -e "${YELLOW}[INFO] Compute capability SM ${COMPUTE_MAJOR}.x (Blackwell GB10)${NC}"
+        echo -e "${YELLOW}[WARN] Flash Attention binaries not yet available for SM 12.x${NC}"
+        echo -e "${YELLOW}[INFO] Server will use standard attention (still fast on GB10!)${NC}"
+    elif [ "$COMPUTE_MAJOR" -ge "8" ]; then
         echo -e "${GREEN}[INFO] Compute capability SM ${COMPUTE_MAJOR}.x - Flash Attention supported${NC}"
         export MAX_JOBS=8
         pip install --quiet flash-attn --no-build-isolation || \
