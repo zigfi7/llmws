@@ -4,7 +4,7 @@ LLMWS Enhanced Server - WebSocket LLM Server
 Features: Session persistence, model management, CUDA estimation, git-lfs support
 KISS principle: Simple, clean, functional
 """
-import os, sys, re, asyncio, json, base64, uuid, zlib, subprocess, shutil, time
+import os, sys, re, asyncio, json, base64, uuid, zlib, subprocess, shutil, time, warnings
 from pathlib import Path
 from collections import defaultdict
 from typing import Optional, Dict, Any, List, Set
@@ -18,6 +18,11 @@ from transformers.utils import is_flash_attn_2_available
 from safetensors.torch import save_file
 from PIL import Image
 from io import BytesIO
+
+# Suppress CUDA compatibility warnings for newer GPUs (like Blackwell GB10)
+# These warnings are informational only - PyTorch works via backward compatibility
+warnings.filterwarnings('ignore', message='.*CUDA capability.*is not compatible.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch.cuda')
 
 # ============================================================================
 # CONFIGURATION
@@ -475,7 +480,7 @@ async def load_model(model_path: str):
         # Load model
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=torch_dtype,
+            dtype=torch_dtype,
             device_map=CONFIG['model']['device_map'],
             local_files_only=True,
             trust_remote_code=CONFIG['model']['trust_remote_code'],
