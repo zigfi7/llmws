@@ -450,6 +450,24 @@ async def load_model(model_path: str):
         # Check CUDA
         compute_capability = check_cuda_compatibility()
         
+        # CRITICAL: SM 12.1 (Blackwell GB10) workaround
+        # PyTorch from pip doesn't have pre-compiled kernels for SM 12.1
+        # We need to force fallback to eager execution + JIT compilation
+        if compute_capability[0] >= 12:
+            print("⚠ Blackwell GB10 detected - applying CUDA kernel workarounds")
+            print("  Forcing eager execution (no pre-compiled kernels for SM 12.1)")
+            
+            # Disable optimized SDPA backends that need compiled kernels
+            torch.backends.cuda.enable_flash_sdp(False)
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+            torch.backends.cuda.enable_math_sdp(True)  # Fallback to math implementation
+            
+            # Set environment for expandable memory segments
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            
+            print("  Note: This will be slower than native SM 12.1 kernels")
+            print("  For production: Build PyTorch from source with TORCH_CUDA_ARCH_LIST='12.1'")
+        
         # Flash Attention support check
         # Note: Flash Attention 2 binaries currently support up to SM 9.0
         # Blackwell GB10 (SM 12.1) is not yet supported - waiting for flash-attn update

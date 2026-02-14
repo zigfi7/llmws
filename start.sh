@@ -6,6 +6,11 @@
 VENV_DIR="venv"
 SERVER_SCRIPT="llmws.py"
 
+# CRITICAL: Force JIT compilation for unsupported SM architectures (Blackwell GB10)
+# This allows PyTorch to work on SM 12.1 even though it doesn't have pre-compiled kernels
+export PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True'
+export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1
+
 # Colors
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
