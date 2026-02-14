@@ -66,8 +66,8 @@ if [ "$CUDA_VERSION" != "none" ]; then
     CUDA_MAJOR=$(echo $CUDA_VERSION | cut -d'.' -f1)
     
     if [ "$CUDA_MAJOR" -ge "13" ]; then
-        echo -e "${GREEN}[INFO] Installing PyTorch for CUDA 13+${NC}"
-        pip install --quiet torch torchvision torchaudio
+        echo -e "${GREEN}[INFO] Installing PyTorch for CUDA 13+ (using CUDA 12.4 compatible build)${NC}"
+        pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
     elif [ "$CUDA_MAJOR" -eq "12" ]; then
         echo -e "${GREEN}[INFO] Installing PyTorch for CUDA 12.x${NC}"
         pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121

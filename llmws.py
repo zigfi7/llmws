@@ -295,6 +295,8 @@ def auto_select_model() -> Optional[str]:
 
 async def download_model_git_lfs(repo: str, target_dir: str, websocket=None):
     """Download model using git-lfs (background task)"""
+    global available_models
+    
     try:
         target_path = Path(CONFIG['paths']['models_dir']) / target_dir
         
@@ -339,7 +341,6 @@ async def download_model_git_lfs(repo: str, target_dir: str, websocket=None):
         if process.returncode == 0:
             await log("Download complete!")
             # Rescan models
-            global available_models
             available_models = scan_models()
             return True
         else:
@@ -669,6 +670,8 @@ async def stream_inference(websocket, session_id: str, prompt: str, config: Dict
 
 async def handle_message(websocket, message: Dict, session_id: str):
     """Handle incoming message"""
+    global available_models
+    
     session = sessions[session_id]
     msg_type = message.get('type', 'inference')
     
@@ -728,7 +731,6 @@ async def handle_message(websocket, message: Dict, session_id: str):
     
     elif msg_type == 'list_models':
         # List available models
-        global available_models
         available_models = scan_models()
         await websocket.send(json.dumps({
             "type": "models_list",
@@ -775,7 +777,6 @@ async def handle_message(websocket, message: Dict, session_id: str):
         if model_path.exists() and model_path.is_dir():
             try:
                 shutil.rmtree(model_path)
-                global available_models
                 available_models = scan_models()
                 await websocket.send(json.dumps({
                     "type": "model_deleted",
