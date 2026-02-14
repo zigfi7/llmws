@@ -1,126 +1,646 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebSockets LLM</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #003300;
-            background-image: url("data:image/svg+xml,%3Csvg version='1.1' xmlns='http://www.w3.org/2000/svg' height=' 36 ' width=' 20 '%3E%3Cpolyline points=' 0 0 , 0 6 , 10 12 , 20 6 , 20 0 , ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3Cpolyline points=' 0 36 , 0 30 , 10 24 , 20 30 , 20 36 , ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3Cpolyline points=' 0 6 , 10 12 , 10 24 , 0 30 ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3Cpolyline points=' 20 6 , 10 12 , 10 24 , 20 30 ' style='stroke: %2308061caa; stroke-width: 2 ; fill: %23000000aa ; '/%3E%3C/svg%3E%0A"); background-repeat: repeat;
-            color: #e0e0e0;
-            margin: 20px;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-        }
-        h1, h2 {
-            color: #00ff00;
-        }
-        form {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin: 10px 0 5px;
-            color: #c7c7c7;
-        }
-        input[type="text"], textarea {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 10px;
-            border: 1px solid #333;
-            border-radius: 4px;
-            background-color: #004d00;
-            color: #e0e0e0;
-        }
-        input[type="text"]:focus, textarea:focus {
-            border-color: #00ff00;
-            outline: none;
-            box-shadow: 0 0 5px #00ff00;
-        }
-        button {
-            padding: 10px 15px;
-            border: none;
-            border-radius: 4px;
-            background-color: #00ff00;
-            color: white;
-            cursor: pointer;
-            transition: background-color 0.3s ease;
-        }
-        button:hover {
-            background-color: #00cc00;
-        }
-        textarea {
-            resize: vertical;
-        }
-        #responseArea {
-            background-color: #004d00;
-            border: 1px solid #333;
-            color: #e0e0e0;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLMWS Enhanced Client</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+      color: #2d3748;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    }
+
+    h1 {
+      color: white;
+      text-align: center;
+      margin-bottom: 20px;
+      font-size: 2.5em;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+
+    h2 {
+      color: #4a5568;
+      margin-bottom: 16px;
+      font-size: 1.5em;
+      border-bottom: 2px solid #667eea;
+      padding-bottom: 8px;
+    }
+
+    .status-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #48bb78;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .status-dot.disconnected {
+      background: #f56565;
+      animation: none;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #4a5568;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    textarea,
+    select {
+      width: 100%;
+      padding: 10px;
+      border: 2px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+      font-family: inherit;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-secondary {
+      background: #e2e8f0;
+      color: #4a5568;
+    }
+
+    .btn-secondary:hover {
+      background: #cbd5e0;
+    }
+
+    .btn-danger {
+      background: #f56565;
+      color: white;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .output {
+      background: #1a202c;
+      color: #e2e8f0;
+      padding: 16px;
+      border-radius: 6px;
+      min-height: 200px;
+      max-height: 400px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .config-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .config-item {
+      flex: 1;
+      min-width: 150px;
+    }
+
+    .info-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      background: #667eea;
+      color: white;
+      border-radius: 12px;
+      font-size: 12px;
+      margin-right: 8px;
+    }
+
+    .model-list {
+      max-height: 300px;
+      overflow-y: auto;
+      border: 2px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 12px;
+    }
+
+    .model-item {
+      padding: 12px;
+      border-bottom: 1px solid #e2e8f0;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .model-item:hover {
+      background: #f7fafc;
+    }
+
+    .model-item:last-child {
+      border-bottom: none;
+    }
+
+    .model-name {
+      font-weight: 600;
+      color: #2d3748;
+    }
+
+    .model-info {
+      font-size: 12px;
+      color: #718096;
+      margin-top: 4px;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #e2e8f0;
+      border-top-color: #667eea;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
 </head>
 <body>
-    <h1>WebSockets LLM</h1>
-    <form id="promptForm">
-        <label for="host">Host:</label>
-        <input type="text" id="host" value="127.0.0.1" required>
+  <div class="container">
+    <h1>🚀 LLMWS Enhanced</h1>
 
-        <label for="port">Port:</label>
-        <input type="text" id="port" value="8765" required>
+    <!-- Status Card -->
+    <div class="card">
+      <div class="status-bar">
+        <div class="status-indicator">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText">Disconnected</span>
+        </div>
+        <div id="sessionInfo"></div>
+      </div>
+    </div>
 
-        <label for="promptSystem">System Prompt:</label>
-        <textarea id="promptSystem" rows="1" required>You are a helpful AI assistant. Keep your answers short and kind. Always give answers that are safe, inclusive, and helpful. Never give out information which could lead to harm.</textarea>
+    <!-- Connection Card -->
+    <div class="card">
+      <h2>Connection</h2>
+      <div class="form-group">
+        <label>Server Address</label>
+        <input type="text" id="serverHost" value="localhost:8765" placeholder="host:port">
+      </div>
+      <div class="form-group">
+        <label>Session ID (optional - for reconnect)</label>
+        <input type="text" id="sessionId" placeholder="Leave empty for new session">
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="connectBtn">Connect</button>
+        <button class="btn btn-secondary" id="disconnectBtn">Disconnect</button>
+        <button class="btn btn-secondary" id="resourcesBtn">Show Resources</button>
+        <button class="btn btn-secondary" id="modelsBtn">List Models</button>
+      </div>
+    </div>
 
-        <label for="promptUser">User Prompt:</label>
-        <textarea id="promptUser" rows="5" required>How to get from London to Paris?</textarea>
+    <!-- Chat Card -->
+    <div class="card" id="chatCard" class="hidden">
+      <h2>Chat</h2>
+      <div class="form-group">
+        <label>System Prompt</label>
+        <textarea id="systemPrompt" placeholder="You are a helpful assistant..."></textarea>
+      </div>
+      <div class="form-group">
+        <label>User Prompt</label>
+        <textarea id="userPrompt" placeholder="Type your message..."></textarea>
+      </div>
+      
+      <!-- Config -->
+      <details style="margin-bottom: 16px;">
+        <summary style="cursor: pointer; font-weight: 600; margin-bottom: 12px;">⚙️ Configuration</summary>
+        <div class="config-row">
+          <div class="config-item">
+            <label>Temperature</label>
+            <input type="number" id="temperature" value="0.7" step="0.1" min="0" max="2">
+          </div>
+          <div class="config-item">
+            <label>Top-p</label>
+            <input type="number" id="topP" value="0.95" step="0.05" min="0" max="1">
+          </div>
+          <div class="config-item">
+            <label>Top-k</label>
+            <input type="number" id="topK" value="50" step="1" min="0">
+          </div>
+          <div class="config-item">
+            <label>Max Tokens</label>
+            <input type="number" id="maxTokens" value="2048" step="128">
+          </div>
+          <div class="config-item">
+            <label>Repetition Penalty</label>
+            <input type="number" id="repPenalty" value="1.1" step="0.05" min="1">
+          </div>
+        </div>
+      </details>
 
-        <button type="submit">Send Prompt</button>
-    </form>
+      <button class="btn btn-primary" id="sendBtn" style="width: 100%;">Send</button>
 
-    <h2>Response:</h2>
-    <textarea id="responseArea" rows="20" cols="80" readonly></textarea>
+      <div class="form-group" style="margin-top: 20px;">
+        <label>Output</label>
+        <div class="output" id="output"></div>
+      </div>
+    </div>
 
-    <script>
-        document.getElementById('promptForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+    <!-- Models Card -->
+    <div class="card" id="modelsCard" class="hidden">
+      <h2>Models</h2>
+      <div class="model-list" id="modelList">
+        <p style="text-align: center; color: #718096;">No models loaded</p>
+      </div>
+      <div style="margin-top: 16px;">
+        <h3 style="font-size: 1.2em; margin-bottom: 8px;">Download Model</h3>
+        <div class="form-group">
+          <label>Repository URL</label>
+          <input type="text" id="repoUrl" placeholder="https://huggingface.co/org/model">
+        </div>
+        <div class="form-group">
+          <label>Target Directory Name</label>
+          <input type="text" id="targetDir" placeholder="model-name">
+        </div>
+        <button class="btn btn-primary" id="downloadBtn">Download</button>
+      </div>
+    </div>
+  </div>
 
-            const host = document.getElementById('host').value;
-            const port = document.getElementById('port').value;
-            const promptSystem = document.getElementById('promptSystem').value;
-            const promptUser = document.getElementById('promptUser').value;
-            const responseArea = document.getElementById('responseArea');
+  <script>
+    let ws = null;
+    let currentSessionId = null;
+    let isConnected = false;
 
-            // Construct the full prompt
-            const fullPrompt = `<|system|>${promptSystem}<|end|>\n<|user|>${promptUser}<|end|>\n<|assistant|>`;
+    const elements = {
+      statusDot: document.getElementById('statusDot'),
+      statusText: document.getElementById('statusText'),
+      sessionInfo: document.getElementById('sessionInfo'),
+      connectBtn: document.getElementById('connectBtn'),
+      disconnectBtn: document.getElementById('disconnectBtn'),
+      resourcesBtn: document.getElementById('resourcesBtn'),
+      modelsBtn: document.getElementById('modelsBtn'),
+      sendBtn: document.getElementById('sendBtn'),
+      downloadBtn: document.getElementById('downloadBtn'),
+      chatCard: document.getElementById('chatCard'),
+      modelsCard: document.getElementById('modelsCard'),
+      output: document.getElementById('output'),
+      modelList: document.getElementById('modelList'),
+    };
 
-            responseArea.value = ''; // Clear previous responses
+    function setStatus(connected, message = '') {
+      isConnected = connected;
+      if (connected) {
+        elements.statusDot.classList.remove('disconnected');
+        elements.statusText.textContent = message || 'Connected';
+        elements.chatCard.classList.remove('hidden');
+      } else {
+        elements.statusDot.classList.add('disconnected');
+        elements.statusText.textContent = message || 'Disconnected';
+        elements.chatCard.classList.add('hidden');
+      }
+    }
 
-            try {
-                const socket = new WebSocket(`ws://${host}:${port}`);
+    function appendOutput(text, newline = false) {
+      if (newline) elements.output.textContent += '\n';
+      elements.output.textContent += text;
+      elements.output.scrollTop = elements.output.scrollHeight;
+    }
 
-                socket.onopen = () => {
-                    socket.send(fullPrompt);
-                };
+    function clearOutput() {
+      elements.output.textContent = '';
+    }
 
-                socket.onmessage = (event) => {
-                    responseArea.value += event.data;
-                    responseArea.scrollTop = responseArea.scrollHeight; // Auto-scroll
-                };
+    async function connect() {
+      const host = document.getElementById('serverHost').value.trim();
+      const sessionId = document.getElementById('sessionId').value.trim();
+      const uri = host.startsWith('ws') ? host : `ws://${host}`;
 
-                socket.onerror = (error) => {
-                    responseArea.value = `WebSocket Error: ${error.message}`;
-                };
+      try {
+        ws = new WebSocket(uri);
 
-                socket.onclose = () => {
-                    responseArea.value += '\n';
-                };
-            } catch (error) {
-                responseArea.value = `Error: ${error.message}`;
-            }
+        ws.onopen = () => {
+          // Send hello with optional session_id
+          const hello = sessionId ? {session_id: sessionId} : {};
+          ws.send(JSON.stringify(hello));
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            handleMessage(data);
+          } catch (e) {
+            console.error('Parse error:', e);
+          }
+        };
+
+        ws.onerror = (error) => {
+          setStatus(false, 'Connection error');
+          console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = () => {
+          setStatus(false);
+          ws = null;
+        };
+
+      } catch (e) {
+        setStatus(false, `Failed: ${e.message}`);
+      }
+    }
+
+    function disconnect() {
+      if (ws) {
+        // Send ack
+        ws.send(JSON.stringify({type: 'ack'}));
+        ws.close();
+        ws = null;
+      }
+      setStatus(false);
+    }
+
+    function handleMessage(data) {
+      const type = data.type;
+
+      if (type === 'welcome') {
+        currentSessionId = data.session_id;
+        const model = data.model || 'No model';
+        const caps = data.capabilities || {};
+        
+        setStatus(true, `Connected to ${model}`);
+        
+        elements.sessionInfo.innerHTML = `
+          <div style="font-size: 12px;">
+            <div>Session: ${currentSessionId.substring(0, 8)}...</div>
+            <div>Context: ${caps.max_context || 'N/A'} tokens</div>
+          </div>
+        `;
+
+        // Update session ID input
+        document.getElementById('sessionId').value = currentSessionId;
+
+      } else if (type === 'start') {
+        appendOutput(`[Generating ${data.max_tokens} tokens max...]\n\n`, false);
+
+      } else if (type === 'token') {
+        appendOutput(data.data, false);
+
+      } else if (type === 'done') {
+        appendOutput(`\n\n[Done - ${data.total_tokens} tokens]`, true);
+
+      } else if (type === 'error') {
+        appendOutput(`\n[ERROR: ${data.message}]`, true);
+
+      } else if (type === 'resources') {
+        displayResources(data);
+
+      } else if (type === 'models_list') {
+        displayModels(data.models);
+
+      } else if (type === 'log') {
+        appendOutput(data.message + '\n', false);
+
+      } else if (type === 'config_ack') {
+        console.log('Config updated:', data.config);
+      }
+    }
+
+    function displayResources(data) {
+      let info = '=== Server Resources ===\n\n';
+      
+      if (data.cuda) {
+        info += `GPU: ${data.cuda.device}\n`;
+        info += `  Total: ${data.cuda.total_gb.toFixed(1)} GB\n`;
+        info += `  Free: ${data.cuda.free_gb.toFixed(1)} GB\n`;
+        info += `  Compute: SM ${data.cuda.compute_capability[0]}.${data.cuda.compute_capability[1]}\n\n`;
+      }
+
+      if (data.model) {
+        info += `Current Model: ${data.model.name || 'None'}\n`;
+        info += `  Vision: ${data.model.vision}\n\n`;
+      }
+
+      if (data.available_models) {
+        info += `Available Models: ${data.available_models.length}\n`;
+        data.available_models.forEach(m => {
+          info += `  - ${m.name} (${m.size_mb.toFixed(0)} MB) [${m.source}]\n`;
         });
-    </script>
+      }
+
+      clearOutput();
+      appendOutput(info, false);
+    }
+
+    function displayModels(models) {
+      elements.modelsCard.classList.remove('hidden');
+      
+      if (!models || models.length === 0) {
+        elements.modelList.innerHTML = '<p style="text-align: center; color: #718096;">No models available</p>';
+        return;
+      }
+
+      elements.modelList.innerHTML = models.map(m => `
+        <div class="model-item" onclick="switchModel('${m.path}')">
+          <div class="model-name">${m.name}</div>
+          <div class="model-info">
+            ${m.size_mb.toFixed(0)} MB • ${m.source} • ${m.path}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function switchModel(path) {
+      if (!ws) return;
+      
+      clearOutput();
+      appendOutput(`Switching to ${path}...\n`, false);
+      
+      ws.send(JSON.stringify({
+        type: 'switch_model',
+        model_path: path
+      }));
+    }
+
+    async function sendInference() {
+      if (!ws) {
+        alert('Not connected');
+        return;
+      }
+
+      const system = document.getElementById('systemPrompt').value;
+      const user = document.getElementById('userPrompt').value;
+
+      if (!user.trim()) {
+        alert('Please enter a prompt');
+        return;
+      }
+
+      // Update config first
+      const config = {
+        temperature: parseFloat(document.getElementById('temperature').value),
+        top_p: parseFloat(document.getElementById('topP').value),
+        top_k: parseInt(document.getElementById('topK').value),
+        max_new_tokens: parseInt(document.getElementById('maxTokens').value),
+        repetition_penalty: parseFloat(document.getElementById('repPenalty').value),
+        do_sample: true
+      };
+
+      ws.send(JSON.stringify({
+        type: 'config',
+        data: config
+      }));
+
+      // Wait a bit for config ack
+      await new Promise(r => setTimeout(r, 100));
+
+      // Clear output and send inference
+      clearOutput();
+      appendOutput(`You: ${user}\n\n`, false);
+      appendOutput('Assistant: ', false);
+
+      ws.send(JSON.stringify({
+        type: 'inference',
+        prompt: {
+          system: system,
+          user: user
+        }
+      }));
+    }
+
+    function getResources() {
+      if (!ws) return;
+      ws.send(JSON.stringify({type: 'get_resources'}));
+    }
+
+    function listModels() {
+      if (!ws) return;
+      ws.send(JSON.stringify({type: 'list_models'}));
+    }
+
+    function downloadModel() {
+      if (!ws) return;
+      
+      const repo = document.getElementById('repoUrl').value.trim();
+      const target = document.getElementById('targetDir').value.trim();
+
+      if (!repo || !target) {
+        alert('Please fill in both fields');
+        return;
+      }
+
+      clearOutput();
+      appendOutput('Starting download...\n', false);
+
+      ws.send(JSON.stringify({
+        type: 'download_model',
+        repo: repo,
+        target_dir: target
+      }));
+    }
+
+    // Event listeners
+    elements.connectBtn.addEventListener('click', connect);
+    elements.disconnectBtn.addEventListener('click', disconnect);
+    elements.resourcesBtn.addEventListener('click', getResources);
+    elements.modelsBtn.addEventListener('click', listModels);
+    elements.sendBtn.addEventListener('click', sendInference);
+    elements.downloadBtn.addEventListener('click', downloadModel);
+
+    // Enter key to send
+    document.getElementById('userPrompt').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.ctrlKey) {
+        sendInference();
+      }
+    });
+  </script>
 </body>
 </html>

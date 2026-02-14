@@ -1,0 +1,45 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8765,
+    "max_message_size": 16777216,
+    "ping_interval": 30,
+    "ping_timeout": 10
+  },
+  
+  "model": {
+    "path": null,
+    "use_safetensors": true,
+    "trust_remote_code": true,
+    "device_map": "auto"
+  },
+  
+  "optimization": {
+    "use_flash_attention": true,
+    "dtype": "auto",
+    "compile": false
+  },
+  
+  "generation_defaults": {
+    "max_new_tokens": 2048,
+    "do_sample": true,
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 50,
+    "repetition_penalty": 1.1
+  },
+  
+  "paths": {
+    "models_dir": "models",
+    "var_dir": "var",
+    "sessions_dir": "var/sessions",
+    "logs_dir": "var/logs"
+  },
+  
+  "limits": {
+    "max_clients": 10,
+    "queue_size_per_client": 1024,
+    "max_context_length": 128000,
+    "timeout_token_generation": 300
+  }
+}
