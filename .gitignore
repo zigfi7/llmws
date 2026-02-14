@@ -8,6 +8,6 @@ __pycache__/
 .venv/
 venv/
 var/
-mamba/
+micromamba/
 models/
 config.json
