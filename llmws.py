@@ -811,7 +811,7 @@ async def handle_message(websocket, message: Dict, session_id: str):
 # CONNECTION HANDLER
 # ============================================================================
 
-async def handle_connection(websocket, path):
+async def handle_connection(websocket):
     """Handle WebSocket connection"""
     client_addr = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
     session_id = None

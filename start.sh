@@ -77,6 +77,11 @@ echo -e "${GREEN}System Information:${NC}"
 python3 -c "
 import torch
 import sys
+import warnings
+
+# Suppress CUDA compatibility warnings
+warnings.filterwarnings('ignore', message='.*CUDA capability.*is not compatible.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch.cuda')
 
 print(f'  Python: {sys.version.split()[0]}')
 print(f'  PyTorch: {torch.__version__}')
