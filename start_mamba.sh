@@ -1,5 +1,5 @@
 #!/bin/bash
-
+python=3.11
 MICROMAMBA_DIR="$(pwd)/micromamba"
 MICROMAMBA_BIN="$MICROMAMBA_DIR/bin/micromamba"
 
@@ -21,11 +21,22 @@ eval "$($MICROMAMBA_BIN shell hook --shell bash)"
 export PATH="$MICROMAMBA_DIR/bin:$PATH"
 
 if ! micromamba env list | grep -q "^myenv\s"; then
-    echo "Creating the myenv environment with Python 3.12..."
-    micromamba create -y -n myenv python=3.12
+    echo "Creating the myenv environment with Python $python ..."
+    micromamba create -y -n myenv python=$python
+    micromamba activate myenv
+    pip install --upgrade pip
+    pip install torch torchvision torchaudio
+    pip install "torch>=2.3.1"
+    pip install "accelerate>=0.31.0"
+    pip install "transformers>=4.43.0"
+    pip install "websockets"
+    pip install "flash_attn>=2.5.8"
+    pip install protobuf sentencepiece
+    pip install peft scipy backoff
+    pip install flash-attn --no-build-isolation
+else
+    micromamba activate myenv
 fi
 
-micromamba activate myenv
-/usr/bin/bash start.sh
-
+python llmws.py
 micromamba deactivate

@@ -607,8 +607,21 @@ async def stream_inference(websocket, session_id: str, prompt: str, config: Dict
         await websocket.send(json.dumps(start_msg))
         session['buffer'].append(start_msg)
         
-        # Generate
-        generated_ids = []
+        # Generate with efficient sliding window decoding
+        # Instead of decoding all tokens each time (O(n²)), we decode only a small window
+        # and match with previously sent text (O(1) per token)
+        MULTILINGUAL_SEPARATORS = {
+            ' ', '\t', '\n',
+            ',', '.', '!', '?', ';', ':', 
+            '，', '。', '！', '？', '；', '：', '、', '…', '—', '～', '-',
+            '¡', '¿', '。', '｡', '、', '·', '‧', '۔', '۔', '؟', '؛'
+        }
+        
+        DECODE_WINDOW = 20  # Decode last N tokens for efficiency
+        
+        id_buffer = []           # All token IDs
+        sent_output = ""         # Text sent to client (for matching)
+        last_decode_idx = 0      # Index of last successfully sent token
         tokens_count = 0
         
         with torch.no_grad():
@@ -649,24 +662,82 @@ async def stream_inference(websocket, session_id: str, prompt: str, config: Dict
                 else:
                     next_token = torch.argmax(logits, dim=-1, keepdim=True)
                 
-                generated_ids.append(next_token.item())
+                # Check for EOS first
+                if next_token.item() == tokenizer.eos_token_id:
+                    # Send any remaining text in buffer
+                    if len(id_buffer) > last_decode_idx:
+                        remaining_tokens = id_buffer[last_decode_idx:]
+                        remaining_text = tokenizer.decode(remaining_tokens, skip_special_tokens=True)
+                        
+                        # Match with sent output to find new text
+                        new_text = remaining_text
+                        if sent_output:
+                            # Find overlap
+                            for overlap_len in range(min(50, len(sent_output)), 0, -1):
+                                if remaining_text.startswith(sent_output[-overlap_len:]):
+                                    new_text = remaining_text[overlap_len:]
+                                    break
+                        
+                        if new_text:
+                            token_msg = {
+                                "type": "token",
+                                "data": new_text
+                            }
+                            await websocket.send(json.dumps(token_msg))
+                            session['buffer'].append(token_msg)
+                    break
+                
+                # Add token to buffer
+                id_buffer.append(next_token.item())
                 current_ids = next_token
-                
-                # Decode and stream
-                token_text = tokenizer.decode([next_token.item()], skip_special_tokens=True)
-                
-                token_msg = {
-                    "type": "token",
-                    "data": token_text
-                }
-                await websocket.send(json.dumps(token_msg))
-                session['buffer'].append(token_msg)
-                
                 tokens_count += 1
                 
-                # Check for EOS
-                if next_token.item() == tokenizer.eos_token_id:
-                    break
+                # Efficient sliding window decode
+                # Only decode last DECODE_WINDOW tokens to avoid O(n²) complexity
+                window_start = max(0, len(id_buffer) - DECODE_WINDOW)
+                window_tokens = id_buffer[window_start:]
+                window_text = tokenizer.decode(window_tokens, skip_special_tokens=True)
+                
+                # Match window_text with end of sent_output to find new text
+                new_text = window_text
+                if sent_output and window_start < last_decode_idx:
+                    # We have overlap - need to match
+                    # The beginning of window_text should overlap with end of sent_output
+                    overlap_search_len = min(100, len(sent_output))
+                    sent_tail = sent_output[-overlap_search_len:]
+                    
+                    # Find where window_text starts in sent_tail
+                    best_match_pos = -1
+                    for check_len in range(min(len(window_text), len(sent_tail)), 0, -1):
+                        if sent_tail.endswith(window_text[:check_len]):
+                            best_match_pos = check_len
+                            break
+                    
+                    if best_match_pos > 0:
+                        new_text = window_text[best_match_pos:]
+                    # else: no match found, send all window_text (shouldn't happen but safe fallback)
+                
+                # Find last separator in new_text
+                last_separator_pos = -1
+                for i in reversed(range(len(new_text))):
+                    if new_text[i] in MULTILINGUAL_SEPARATORS:
+                        last_separator_pos = i + 1
+                        break
+                
+                # Send chunk up to separator
+                if last_separator_pos > 0:
+                    to_send = new_text[:last_separator_pos]
+                    if to_send:
+                        token_msg = {
+                            "type": "token",
+                            "data": to_send
+                        }
+                        await websocket.send(json.dumps(token_msg))
+                        session['buffer'].append(token_msg)
+                        
+                        # Update tracking
+                        sent_output += to_send
+                        last_decode_idx = len(id_buffer)  # Mark this position as sent
                 
                 await asyncio.sleep(0)
         
