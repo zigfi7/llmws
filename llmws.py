@@ -89,6 +89,16 @@ def load_config():
             json.dump(DEFAULT_CONFIG, f, indent=2)
         return DEFAULT_CONFIG
 
+def save_config():
+    """Save current config to file"""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(CONFIG, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving config: {e}")
+        return False
+
 CONFIG = load_config()
 
 # Create directories
@@ -107,6 +117,17 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 compute_capability = (0, 0)
 use_flash_attention = False
 available_models = []  # List of available models
+
+# Model status tracking
+model_status = {
+    "loaded": False,
+    "status": "NOT_LOADED",  # NOT_LOADED, LOADING, OK, ERROR
+    "name": None,
+    "path": None,
+    "error": None,
+    "params": None,
+    "max_context": None
+}
 
 # Session management
 sessions: Dict[str, Dict] = {}  # session_id -> session data
@@ -366,42 +387,74 @@ async def download_model_git_lfs(repo: str, target_dir: str, websocket=None):
         return False
 
 def estimate_max_context(available_memory_gb: float, model_params_b: float) -> int:
-    """Estimate maximum context length based on available memory"""
-    # Rough estimation: 
-    # Each token in context uses approximately 2 bytes per parameter (fp16)
-    # Plus activation memory
+    """
+    Estimate maximum context length based on available memory and model config.
     
-    # Reserve some memory for model weights and activations
-    usable_memory_gb = available_memory_gb * 0.6
+    For multi-GPU setups, available_memory_gb is the sum of all GPUs.
+    """
+    
+    # If model has loaded and we know its max context, use that as the ceiling
+    if model_status.get("max_context"):
+        model_max = model_status["max_context"]
+    else:
+        model_max = 128000  # Default to 128k if unknown
+    
+    # KV cache memory estimation:
+    # For transformers, KV cache per token ≈ 2 * num_layers * hidden_size * 2 (key+value)
+    # Rough approximation: ~1-2 KB per token for large models (70B)
+    # For smaller models (8B): ~0.5 KB per token
+    
+    # Conservative estimate based on model size
+    if model_params_b < 15:  # Small models (7B-13B)
+        bytes_per_context_token = 512  # 0.5 KB
+    elif model_params_b < 40:  # Medium models (13B-30B)
+        bytes_per_context_token = 1024  # 1 KB
+    else:  # Large models (70B+)
+        bytes_per_context_token = 1536  # 1.5 KB
+    
+    # Reserve memory for activations and safety margin
+    usable_memory_gb = available_memory_gb * 0.7  # Use 70% of free memory
     usable_memory_bytes = usable_memory_gb * 1024 * 1024 * 1024
     
-    # Bytes per token in context (rough estimate)
-    bytes_per_token = model_params_b * 1e9 * 2 / 1000  # Simplified
+    estimated_tokens = int(usable_memory_bytes / bytes_per_context_token)
     
-    max_tokens = int(usable_memory_bytes / bytes_per_token)
+    # Use the minimum of: estimated from memory, model's max, and config limit
+    max_tokens = min(estimated_tokens, model_max, CONFIG['limits']['max_context_length'])
     
-    # Cap at reasonable limits
-    return min(max_tokens, CONFIG['limits']['max_context_length'])
+    # But if we have plenty of memory, prefer model's max
+    if estimated_tokens > model_max * 1.5:
+        return model_max  # Use model's full capability
+    
+    # Safety: never allow less than 1000 tokens
+    return max(max_tokens, 1000)
 
 def check_cuda_memory():
-    """Check CUDA memory and estimate context limits"""
+    """Check CUDA memory and estimate context limits (multi-GPU aware)"""
     if not torch.cuda.is_available():
         return None
     
     try:
-        device_props = torch.cuda.get_device_properties(0)
-        total_memory_gb = device_props.total_memory / (1024**3)
+        num_gpus = torch.cuda.device_count()
         
-        # Get current memory usage
-        allocated = torch.cuda.memory_allocated(0) / (1024**3)
-        reserved = torch.cuda.memory_reserved(0) / (1024**3)
-        free = total_memory_gb - reserved
+        # Multi-GPU: sum all available memory
+        total_vram_gb = 0
+        total_allocated_gb = 0
+        total_reserved_gb = 0
+        
+        for device_id in range(num_gpus):
+            props = torch.cuda.get_device_properties(device_id)
+            total_vram_gb += props.total_memory / (1024**3)
+            total_allocated_gb += torch.cuda.memory_allocated(device_id) / (1024**3)
+            total_reserved_gb += torch.cuda.memory_reserved(device_id) / (1024**3)
+        
+        free_gb = total_vram_gb - total_reserved_gb
         
         return {
-            "total_gb": total_memory_gb,
-            "allocated_gb": allocated,
-            "reserved_gb": reserved,
-            "free_gb": free,
+            "total_gb": total_vram_gb,
+            "allocated_gb": total_allocated_gb,
+            "reserved_gb": total_reserved_gb,
+            "free_gb": free_gb,
+            "num_gpus": num_gpus,
             "device": torch.cuda.get_device_name(0),
             "compute_capability": torch.cuda.get_device_capability(0)
         }
@@ -435,7 +488,13 @@ def check_cuda_compatibility():
 
 async def load_model(model_path: str):
     """Load model from path"""
-    global model, tokenizer, processor, generation_config, compute_capability, use_flash_attention, current_model
+    global model, tokenizer, processor, generation_config, compute_capability, use_flash_attention, current_model, model_status
+    
+    # Update status
+    model_status["status"] = "LOADING"
+    model_status["path"] = model_path
+    model_status["name"] = Path(model_path).name
+    model_status["error"] = None
     
     print(f"\nLoading model from: {model_path}")
     
@@ -532,6 +591,20 @@ async def load_model(model_path: str):
         )
         print("✓ Tokenizer loaded")
         
+        # Get model's max context from config
+        try:
+            model_config = model.config
+            max_position_embeddings = getattr(model_config, 'max_position_embeddings', None)
+            if max_position_embeddings:
+                model_max_context = max_position_embeddings
+                print(f"✓ Model max context: {model_max_context:,} tokens")
+            else:
+                model_max_context = 128000  # Default if unknown
+                print(f"⚠ Model max context unknown, using: {model_max_context:,}")
+        except:
+            model_max_context = 128000
+            print(f"⚠ Could not read model config, using default: {model_max_context:,}")
+        
         # Generation config
         generation_config = GenerationConfig(
             **CONFIG['generation_defaults']
@@ -539,10 +612,54 @@ async def load_model(model_path: str):
         
         current_model = model_path
         
+        # Check memory and estimate context
+        memory_info = check_cuda_memory()
+        if memory_info:
+            print(f"\n💾 Memory Status:")
+            print(f"  GPUs: {memory_info['num_gpus']}")
+            print(f"  Total VRAM: {memory_info['total_gb']:.1f} GB")
+            print(f"  Used by model: {memory_info['reserved_gb']:.1f} GB")
+            print(f"  Free: {memory_info['free_gb']:.1f} GB")
+            
+            # Estimate max context
+            estimated_context = estimate_max_context(memory_info['free_gb'], model_params_b)
+            print(f"  Estimated max context: {estimated_context:,} tokens")
+            
+            if estimated_context < 1000:
+                print(f"  ⚠️ WARNING: Low estimated context! Check memory usage.")
+        
+        # Update model status - SUCCESS
+        model_status["loaded"] = True
+        model_status["status"] = "OK"
+        model_status["params"] = f"{model_params_b:.2f}B"
+        model_status["max_context"] = model_max_context
+        
+        # Auto-save to config
+        CONFIG['model']['path'] = model_path
+        CONFIG['model']['name'] = Path(model_path).name
+        CONFIG['model']['params'] = f"{model_params_b:.2f}B"
+        CONFIG['model']['max_context'] = model_max_context
+        CONFIG['model']['last_loaded'] = str(Path(model_path))
+        save_config()
+        
+        print(f"✓ Model config saved")
+        
         return True
         
     except Exception as e:
         print(f"✗ Error loading model: {e}")
+        
+        # Update model status - ERROR
+        model_status["loaded"] = False
+        model_status["status"] = "ERROR"
+        model_status["error"] = str(e)
+        
+        # Save error to config
+        CONFIG['model']['path'] = model_path
+        CONFIG['model']['status'] = "ERROR"
+        CONFIG['model']['error'] = str(e)
+        save_config()
+        
         return False
 
 # ============================================================================
@@ -847,13 +964,40 @@ async def handle_message(websocket, message: Dict, session_id: str):
             success = await load_model(model_path)
             await websocket.send(json.dumps({
                 "type": "model_switched" if success else "error",
-                "message": f"Model switched to {model_path}" if success else "Failed to load model"
+                "message": f"Model switched to {model_path}" if success else "Failed to load model",
+                "status": model_status
             }))
         else:
             await websocket.send(json.dumps({
                 "type": "error",
                 "message": "Model not found"
             }))
+    
+    elif msg_type == 'recheck_model':
+        # Recheck current model (useful if files were restored)
+        if current_model and Path(current_model).exists():
+            print(f"\n[Recheck] Reloading model: {current_model}")
+            success = await load_model(current_model)
+            await websocket.send(json.dumps({
+                "type": "recheck_complete",
+                "success": success,
+                "status": model_status
+            }))
+        else:
+            await websocket.send(json.dumps({
+                "type": "error",
+                "message": "No model loaded or model files not found. Please check files and try switching model."
+            }))
+    
+    elif msg_type == 'get_status':
+        # Get current model status
+        memory_info = check_cuda_memory()
+        await websocket.send(json.dumps({
+            "type": "status",
+            "model": model_status,
+            "memory": memory_info,
+            "sessions": len(sessions)
+        }))
     
     elif msg_type == 'download_model':
         # Download model via git-lfs (background)
