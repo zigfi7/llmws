@@ -509,51 +509,39 @@ async def load_model(model_path: str):
         # Check CUDA
         compute_capability = check_cuda_compatibility()
         
-        # CRITICAL: SM 12.1 (Blackwell GB10) workaround
-        # PyTorch from pip doesn't have pre-compiled kernels for SM 12.1
-        # We need to force fallback to eager execution + JIT compilation
+        # Blackwell GB10 (SM 12.x) - use SDPA with cuDNN backend (fastest on Blackwell)
+        # PyTorch 2.10+cu130 has native cuDNN SDPA support for SM 12.x
         if compute_capability[0] >= 12:
-            print("⚠ Blackwell GB10 detected - applying CUDA kernel workarounds")
-            print("  Forcing eager execution (no pre-compiled kernels for SM 12.1)")
-            
-            # Disable optimized SDPA backends that need compiled kernels
-            torch.backends.cuda.enable_flash_sdp(False)
-            torch.backends.cuda.enable_mem_efficient_sdp(False)
-            torch.backends.cuda.enable_math_sdp(True)  # Fallback to math implementation
-            
-            # Set environment for expandable memory segments
+            print("✓ Blackwell detected - using SDPA with cuDNN backend")
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(True)
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-            
-            print("  Note: This will be slower than native SM 12.1 kernels")
-            print("  For production: Build PyTorch from source with TORCH_CUDA_ARCH_LIST='12.1'")
-        
-        # Flash Attention support check
-        # Note: Flash Attention 2 binaries currently support up to SM 9.0
-        # Blackwell GB10 (SM 12.1) is not yet supported - waiting for flash-attn update
-        if compute_capability[0] >= 12:
-            print("⚠ Flash Attention not available for SM 12.x (Blackwell GB10)")
-            print("  Using standard attention (flash-attn needs rebuild for GB10)")
             use_flash_attention = False
+            attn_implementation = "sdpa"
+        elif (torch.cuda.is_available() and
+              compute_capability[0] >= 8 and
+              is_flash_attn_2_available() and
+              CONFIG['optimization']['use_flash_attention']):
+            use_flash_attention = True
+            attn_implementation = "flash_attention_2"
+        elif compute_capability[0] >= 8:
+            use_flash_attention = False
+            attn_implementation = "sdpa"
         else:
-            use_flash_attention = (
-                torch.cuda.is_available() and
-                compute_capability[0] >= 8 and
-                is_flash_attn_2_available() and
-                CONFIG['optimization']['use_flash_attention']
-            )
-        
+            use_flash_attention = False
+            attn_implementation = None
+
         # Determine dtype
         if CONFIG['optimization']['dtype'] == 'auto':
             torch_dtype = torch.bfloat16 if compute_capability[0] >= 8 else torch.float16
         else:
             torch_dtype = CONFIG['optimization']['dtype']
-        
-        attn_implementation = "flash_attention_2" if use_flash_attention else None
-        
+
         print(f"  dtype: {torch_dtype}")
         print(f"  attention: {attn_implementation}")
         print(f"  safetensors: {use_safetensors}")
-        
+
         # Load model
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -1087,6 +1075,7 @@ async def handle_connection(websocket):
             "capabilities": {
                 "vision": processor is not None,
                 "flash_attention": use_flash_attention,
+                "sdpa": not use_flash_attention and compute_capability[0] >= 8,
                 "compute_capability": compute_capability,
                 "max_context": max_context
             },

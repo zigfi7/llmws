@@ -5,11 +5,9 @@ After=network.target
 [Service]
 # User=your-user
 WorkingDirectory=/opt/llmws/
-ExecStart=/bin/bash /opt/llmws/start_mamba.sh
+ExecStart=/bin/bash /opt/llmws/start.sh --mamba
 Restart=always
 RestartSec=5
-#Environment="PATH=/usr/local/bin:/usr/bin:/bin:/opt/llm/micromamba/bin"
-#Environment="MAMBA_ROOT_PREFIX=/opt/llm/micromamba/root"
 
 [Install]
 WantedBy=multi-user.target

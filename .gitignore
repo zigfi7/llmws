@@ -11,3 +11,4 @@ var/
 micromamba/
 models/
 config.json
+startup.conf

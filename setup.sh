@@ -1,139 +1,162 @@
 #!/bin/bash
-# LLMWS Setup Script - Auto-detect architecture and setup environment
+# LLMWS Setup Script - Multi-platform (x86_64/aarch64, CUDA 11/12/13, CPU)
 
-# Configuration
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
 VENV_DIR="venv"
-PYTHON_BIN="python3"
+STARTUP_CONFIG_FILE="$SCRIPT_DIR/startup.conf"
+
+# Defaults (can be overridden in environment or startup.conf)
+PYTHON_MIN="${PYTHON_MIN:-3.10}"
+
+if [ -f "$STARTUP_CONFIG_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$STARTUP_CONFIG_FILE"
+fi
 
 # Colors
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+if [ -t 1 ]; then
+    G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; R='\033[0;31m'; N='\033[0m'
+else
+    G=''; C=''; Y=''; R=''; N=''
+fi
 
-echo -e "${CYAN}╔════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║         LLMWS - Environment Setup                 ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════════════════╝${NC}"
+echo -e "${C}LLMWS Setup${N}"
 
-# Detect architecture
+# ── Detect platform ─────────────────────────────────────────────────
 ARCH=$(uname -m)
-echo -e "${CYAN}[INFO] Detected architecture: ${YELLOW}${ARCH}${NC}"
+OS=$(uname -s)
+CUDA_VER="none"
 
-# Detect CUDA
-if command -v nvcc &> /dev/null; then
-    CUDA_VERSION=$(nvcc --version | grep "release" | awk '{print $6}' | cut -c2-)
-    echo -e "${CYAN}[INFO] CUDA detected: ${YELLOW}${CUDA_VERSION}${NC}"
-else
-    CUDA_VERSION="none"
-    echo -e "${YELLOW}[WARN] CUDA not detected - CPU-only mode${NC}"
+# Prefer nvidia-smi (reports driver-supported CUDA, more accurate for PyTorch)
+if command -v nvidia-smi &>/dev/null; then
+    CUDA_VER=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
 fi
 
-# 1. System Dependencies
-echo -e "\n${CYAN}[1/6] Installing system dependencies...${NC}"
-sudo apt-get update -qq
-sudo apt-get install -y -qq \
-    python3-venv \
-    python3-dev \
-    build-essential \
-    ninja-build \
-    libssl-dev \
-    zlib1g-dev \
-    libjpeg-dev \
-    git \
-    git-lfs
+# Fallback to nvcc (compile-time toolkit version)
+if [ -z "$CUDA_VER" ] || [ "$CUDA_VER" = "none" ]; then
+    if command -v nvcc &>/dev/null; then
+        CUDA_VER=$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
+    elif [ -f /usr/local/cuda/bin/nvcc ]; then
+        CUDA_VER=$(/usr/local/cuda/bin/nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1)
+    fi
+fi
 
-git lfs install 2>/dev/null
+if [ -z "$CUDA_VER" ]; then
+    CUDA_VER="none"
+fi
 
-# 2. Create Virtual Environment
-echo -e "${CYAN}[2/6] Creating virtual environment...${NC}"
+CUDA_MAJOR="${CUDA_VER%%.*}"
+
+echo -e "${C}  OS: ${OS}  Arch: ${ARCH}  CUDA: ${CUDA_VER}${N}"
+
+# ── System dependencies (Linux only) ────────────────────────────────
+if [ "$OS" = "Linux" ] && command -v apt-get &>/dev/null; then
+    echo -e "${C}  Installing system deps${N}"
+    sudo apt-get update -qq 2>/dev/null || true
+    sudo apt-get install -y -qq python3-venv python3-dev build-essential \
+        ninja-build libssl-dev git git-lfs 2>/dev/null || true
+    git lfs install 2>/dev/null || true
+fi
+
+# ── Python version check ────────────────────────────────────────────
+PYTHON_BIN="python3"
+PY_VER=$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)
+
+echo -e "${C}  Python: ${PY_VER}${N}"
+
+if [ -z "$PY_VER" ]; then
+    echo -e "${R}  ERROR: python3 not found or not runnable${N}"
+    exit 1
+fi
+
+if [ "$(printf '%s\n' "$PYTHON_MIN" "$PY_VER" | sort -V | head -n 1)" != "$PYTHON_MIN" ]; then
+    echo -e "${R}  ERROR: Python >= ${PYTHON_MIN} required (found ${PY_VER})${N}"
+    exit 1
+fi
+
+# ── Create venv ──────────────────────────────────────────────────────
+echo -e "${C}  Creating venv${N}"
 if [ -d "$VENV_DIR" ]; then
-    echo -e "${YELLOW}[WARN] Virtual environment exists, recreating...${NC}"
-    rm -rf $VENV_DIR
+    echo -e "${Y}  Removing existing venv${N}"
+    rm -rf "$VENV_DIR"
 fi
 
-$PYTHON_BIN -m venv $VENV_DIR
-source $VENV_DIR/bin/activate
+$PYTHON_BIN -m venv "$VENV_DIR"
+source "$VENV_DIR/bin/activate"
 
-# 3. Upgrade pip
-echo -e "${CYAN}[3/6] Upgrading pip and build tools...${NC}"
-pip install --quiet --upgrade pip setuptools wheel packaging ninja
+pip install -q --upgrade pip setuptools wheel
 
-# 4. Install PyTorch
-echo -e "${CYAN}[4/6] Installing PyTorch...${NC}"
+# ── Install PyTorch ──────────────────────────────────────────────────
+echo -e "${C}  Installing PyTorch${N}"
 
-if [ "$CUDA_VERSION" != "none" ]; then
-    CUDA_MAJOR=$(echo $CUDA_VERSION | cut -d'.' -f1)
-    
-    if [ "$CUDA_MAJOR" -ge "13" ]; then
-        echo -e "${GREEN}[INFO] Installing PyTorch for CUDA 13+ (using CUDA 12.4 compatible build)${NC}"
-        pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-    elif [ "$CUDA_MAJOR" -eq "12" ]; then
-        echo -e "${GREEN}[INFO] Installing PyTorch for CUDA 12.x${NC}"
-        pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    elif [ "$CUDA_MAJOR" -eq "11" ]; then
-        echo -e "${GREEN}[INFO] Installing PyTorch for CUDA 11.x${NC}"
-        pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+if [ "$CUDA_VER" != "none" ]; then
+    if [ "$CUDA_MAJOR" -ge 13 ]; then
+        echo -e "${G}  PyTorch for CUDA 13.x (${ARCH})${N}"
+        pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+    elif [ "$CUDA_MAJOR" -eq 12 ]; then
+        CUDA_MINOR="${CUDA_VER##*.}"
+        if [ "$CUDA_MINOR" -ge 6 ]; then
+            echo -e "${G}  PyTorch for CUDA 12.6+${N}"
+            pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+        elif [ "$CUDA_MINOR" -ge 4 ]; then
+            echo -e "${G}  PyTorch for CUDA 12.4+${N}"
+            pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+        else
+            echo -e "${G}  PyTorch for CUDA 12.1+${N}"
+            pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+        fi
+    elif [ "$CUDA_MAJOR" -eq 11 ]; then
+        echo -e "${G}  PyTorch for CUDA 11.x${N}"
+        pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
     else
-        echo -e "${YELLOW}[WARN] Unknown CUDA version, installing default PyTorch${NC}"
-        pip install --quiet torch torchvision torchaudio
+        echo -e "${Y}  Unknown CUDA ${CUDA_VER} - installing default PyTorch${N}"
+        pip install -q torch torchvision torchaudio
     fi
 else
-    echo -e "${YELLOW}[INFO] Installing PyTorch (CPU-only)${NC}"
-    pip install --quiet torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    echo -e "${Y}  No CUDA - CPU-only PyTorch${N}"
+    pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 fi
 
-# Verify PyTorch
-echo -e "${CYAN}[INFO] Verifying PyTorch installation...${NC}"
-python3 -c "import torch; print(f'  PyTorch: {torch.__version__}'); print(f'  CUDA: {torch.cuda.is_available()}'); print(f'  Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"CPU\"}');"
+# ── Verify PyTorch ───────────────────────────────────────────────────
+python3 -W ignore::UserWarning -c "
+import torch, sys
+print(f'  PyTorch {torch.__version__} Python {sys.version.split()[0]}')
+if torch.cuda.is_available():
+    cap = torch.cuda.get_device_capability(0)
+    print(f'  GPU: {torch.cuda.get_device_name(0)} SM {cap[0]}.{cap[1]}')
+else:
+    print('  CPU mode')
+"
 
-# 5. Install LLMWS Dependencies
-echo -e "${CYAN}[5/6] Installing LLMWS dependencies...${NC}"
-pip install --quiet \
-    websockets \
-    transformers \
-    accelerate \
-    safetensors \
-    pillow \
-    sentencepiece \
-    protobuf
+# ── Install dependencies ─────────────────────────────────────────────
+echo -e "${C}  Installing dependencies${N}"
+pip install -q websockets transformers accelerate safetensors \
+    pillow sentencepiece protobuf
 
-# 6. Install Flash Attention (if CUDA available)
-if [ "$CUDA_VERSION" != "none" ]; then
-    echo -e "${CYAN}[6/6] Installing Flash Attention 2...${NC}"
-    
-    # Check compute capability
-    COMPUTE_CAP=$(python3 -c "import torch; print(torch.cuda.get_device_capability(0) if torch.cuda.is_available() else (0,0))" 2>/dev/null | tr -d '(,) ')
-    COMPUTE_MAJOR=$(echo $COMPUTE_CAP | awk '{print $1}')
-    
-    if [ "$COMPUTE_MAJOR" -ge "12" ]; then
-        echo -e "${YELLOW}[INFO] Compute capability SM ${COMPUTE_MAJOR}.x (Blackwell GB10)${NC}"
-        echo -e "${YELLOW}[WARN] Flash Attention binaries not yet available for SM 12.x${NC}"
-        echo -e "${YELLOW}[INFO] Server will use standard attention (still fast on GB10!)${NC}"
-    elif [ "$COMPUTE_MAJOR" -ge "8" ]; then
-        echo -e "${GREEN}[INFO] Compute capability SM ${COMPUTE_MAJOR}.x - Flash Attention supported${NC}"
-        export MAX_JOBS=8
-        pip install --quiet flash-attn --no-build-isolation || \
-            echo -e "${YELLOW}[WARN] Flash Attention install failed - continuing without it${NC}"
-    else
-        echo -e "${YELLOW}[WARN] Compute capability SM ${COMPUTE_MAJOR}.x - Flash Attention requires SM 8.0+${NC}"
+# ── Flash Attention (optional, skip on Blackwell - use SDPA instead) ─
+if [ "$CUDA_VER" != "none" ]; then
+    COMPUTE_MAJOR=$(python3 -W ignore::UserWarning -c "
+import torch
+if torch.cuda.is_available():
+    print(torch.cuda.get_device_capability(0)[0])
+else:
+    print(0)
+" 2>/dev/null)
+
+    if [ "$COMPUTE_MAJOR" -ge 12 ]; then
+        echo -e "${G}  Blackwell GPU - using SDPA (cuDNN backend, faster than flash-attn)${N}"
+    elif [ "$COMPUTE_MAJOR" -ge 8 ]; then
+        echo -e "${C}  Installing Flash Attention 2${N}"
+        MAX_JOBS=4 pip install -q flash-attn --no-build-isolation 2>/dev/null || \
+            echo -e "${Y}  Flash Attention install failed - SDPA will be used as fallback${N}"
     fi
-else
-    echo -e "${CYAN}[6/6] Skipping Flash Attention (no CUDA)${NC}"
 fi
 
-# Create directories
+# ── Create directories ───────────────────────────────────────────────
 mkdir -p models var/sessions var/models var/logs
 
-# Summary
-echo -e "\n${GREEN}╔════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║              Setup Complete! 🚀                    ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════════════════╝${NC}"
-echo -e ""
-echo -e "${CYAN}To start the server:${NC}"
-echo -e "  ${YELLOW}./start.sh${NC}"
-echo -e ""
-echo -e "${CYAN}Or manually:${NC}"
-echo -e "  ${YELLOW}source venv/bin/activate${NC}"
-echo -e "  ${YELLOW}python llmws.py${NC}"
-echo -e ""
+echo -e "${G}  Setup complete${N}"
+echo -e "${C}  Run: ./start.sh${N}"

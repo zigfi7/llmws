@@ -1,0 +1,25 @@
+# LLMWS startup configuration (Linux-first).
+# Copy to startup.conf and adjust values for your machines.
+
+# Environment backend:
+# - auto: prefer existing venv, then existing mamba env, then create one
+# - venv: force venv via setup.sh
+# - mamba: force micromamba env
+ENV_BACKEND=auto
+
+# Minimum system python version used by auto mode before falling back to mamba.
+PYTHON_MIN=3.10
+
+# Micromamba environment name.
+MAMBA_ENV=llmws
+
+# Python version selection for mamba environments.
+# Priority:
+# 1) MAMBA_PYTHON (global override)
+# 2) MAMBA_PYTHON_X86_64 or MAMBA_PYTHON_AARCH64
+# 3) CUDA-based defaults below
+MAMBA_PYTHON=
+MAMBA_PYTHON_X86_64=
+MAMBA_PYTHON_AARCH64=
+MAMBA_PYTHON_DEFAULT=3.11
+MAMBA_PYTHON_CUDA13_PLUS=3.12

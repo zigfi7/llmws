@@ -1,41 +1,38 @@
 #!/bin/bash
 # LLMWS Stop Script
 
+set -uo pipefail
+
 # Colors
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+if [ -t 1 ]; then
+    G='\033[0;32m'; C='\033[0;36m'; Y='\033[1;33m'; N='\033[0m'
+else
+    G=''; C=''; Y=''; N=''
+fi
 
-echo -e "${CYAN}[*] Stopping LLMWS server...${NC}"
+echo -e "${C}Stopping LLMWS server...${N}"
 
-# Find and kill llmws.py processes
-PIDS=$(pgrep -f "python.*llmws.py")
+PIDS=$(pgrep -f "python.*llmws.py" || true)
 
 if [ -z "$PIDS" ]; then
-    echo -e "${YELLOW}[!] No LLMWS server processes found${NC}"
+    echo -e "${Y}  No LLMWS server processes found${N}"
     exit 0
 fi
 
-echo -e "${CYAN}[*] Found processes: ${PIDS}${NC}"
+echo -e "${C}  Found PIDs: ${PIDS}${N}"
 
-# Kill processes gracefully
 for PID in $PIDS; do
-    echo -e "${CYAN}[*] Stopping PID: ${PID}${NC}"
-    kill -TERM $PID 2>/dev/null
+    kill -TERM "$PID" 2>/dev/null || true
 done
 
-# Wait for processes to stop
 sleep 2
 
-# Check if any still running
-STILL_RUNNING=$(pgrep -f "python.*llmws.py")
-if [ ! -z "$STILL_RUNNING" ]; then
-    echo -e "${YELLOW}[!] Some processes still running, forcing...${NC}"
+STILL_RUNNING=$(pgrep -f "python.*llmws.py" || true)
+if [ -n "$STILL_RUNNING" ]; then
+    echo -e "${Y}  Forcing remaining processes...${N}"
     for PID in $STILL_RUNNING; do
-        kill -9 $PID 2>/dev/null
+        kill -9 "$PID" 2>/dev/null || true
     done
 fi
 
-echo -e "${GREEN}[✓] LLMWS server stopped${NC}"
+echo -e "${G}  LLMWS server stopped${N}"
