@@ -3,644 +3,1124 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LLMWS Enhanced Client</title>
+  <title>LLMWS Web Client</title>
   <style>
+    :root {
+      --bg: #1c2028;
+      --bg-alt: #222833;
+      --panel: #262d3a;
+      --panel-soft: #2c3444;
+      --line: #394459;
+      --text: #d9e1f2;
+      --muted: #95a3be;
+      --ok: #5fd6a8;
+      --err: #ff6a78;
+      --accent: #7a87f0;
+      --accent-2: #8f79df;
+      --chat-bg: #151a21;
+      --user: #36405a;
+      --assistant: #283047;
+      --event: #1f2533;
+      --shadow: 0 14px 34px rgba(0, 0, 0, 0.35);
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+
     * {
+      box-sizing: border-box;
       margin: 0;
       padding: 0;
-      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 20px;
-      color: #2d3748;
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 420px at 12% -20%, rgba(122, 135, 240, 0.2), transparent),
+        radial-gradient(900px 360px at 95% 0%, rgba(143, 121, 223, 0.16), transparent),
+        var(--bg);
+      overflow: hidden;
     }
 
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
+    code,
+    .mono,
+    textarea,
+    input,
+    select,
+    .message-text {
+      font-family: "JetBrains Mono", "Iosevka", "SFMono-Regular", Menlo, Consolas, monospace;
     }
 
-    .card {
-      background: white;
-      border-radius: 12px;
-      padding: 24px;
-      margin-bottom: 20px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    .app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: 40px 1fr;
+      gap: 10px;
+      padding: 10px;
     }
 
-    h1 {
-      color: white;
-      text-align: center;
-      margin-bottom: 20px;
-      font-size: 2.5em;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-
-    h2 {
-      color: #4a5568;
-      margin-bottom: 16px;
-      font-size: 1.5em;
-      border-bottom: 2px solid #667eea;
-      padding-bottom: 8px;
-    }
-
-    .status-bar {
+    .topbar {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      padding: 12px 16px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-      border-radius: 8px;
-      margin-bottom: 16px;
+      background: linear-gradient(90deg, #202633, #2a3041 55%, #2c3250);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 0 14px;
+      box-shadow: var(--shadow);
+      min-height: 40px;
     }
 
-    .status-indicator {
+    .status-wrap {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
+      min-width: 0;
     }
 
     .status-dot {
       width: 10px;
       height: 10px;
-      border-radius: 50%;
-      background: #48bb78;
-      animation: pulse 2s infinite;
+      border-radius: 999px;
+      background: var(--err);
+      box-shadow: 0 0 0 0 rgba(255, 106, 120, 0.45);
+      flex: 0 0 auto;
+    }
+
+    .status-dot.connected {
+      background: var(--ok);
+      box-shadow: 0 0 0 0 rgba(95, 214, 168, 0.45);
+      animation: pulse 1.7s infinite;
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
+      0% {
+        box-shadow: 0 0 0 0 rgba(95, 214, 168, 0.5);
+      }
+      70% {
+        box-shadow: 0 0 0 8px rgba(95, 214, 168, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(95, 214, 168, 0);
+      }
     }
 
-    .status-dot.disconnected {
-      background: #f56565;
-      animation: none;
+    #statusLine {
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 60vw;
     }
 
-    .form-group {
-      margin-bottom: 16px;
+    .top-meta {
+      display: flex;
+      gap: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 10px;
+    }
+
+    .sidebar {
+      min-height: 0;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding-right: 4px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel h2 {
+      font-size: 13px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #b6c5e5;
+      margin-bottom: 10px;
+      font-weight: 700;
     }
 
     label {
       display: block;
-      font-weight: 600;
-      margin-bottom: 6px;
-      color: #4a5568;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
     }
 
-    input[type="text"],
-    input[type="number"],
-    textarea,
-    select {
+    input,
+    select,
+    textarea {
       width: 100%;
-      padding: 10px;
-      border: 2px solid #e2e8f0;
-      border-radius: 6px;
-      font-size: 14px;
-      transition: border-color 0.2s;
-    }
-
-    input:focus,
-    textarea:focus,
-    select:focus {
+      background: var(--panel-soft);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      font-size: 13px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
       outline: none;
-      border-color: #667eea;
+      transition: border-color 0.14s ease, box-shadow 0.14s ease;
     }
 
     textarea {
-      min-height: 100px;
       resize: vertical;
-      font-family: inherit;
+      min-height: 72px;
+      line-height: 1.45;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(122, 135, 240, 0.18);
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      margin-bottom: 8px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .row + .row {
+      margin-top: 8px;
     }
 
     .btn {
-      padding: 10px 20px;
-      border: none;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 600;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      font-weight: 700;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: transform 0.1s ease, filter 0.1s ease;
+      color: var(--text);
+      background: var(--panel-soft);
+      min-width: 0;
     }
 
-    .btn-primary {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+    .btn:hover {
+      filter: brightness(1.08);
+      transform: translateY(-1px);
     }
 
-    .btn-primary:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    .btn:active {
+      transform: translateY(0);
     }
 
-    .btn-secondary {
-      background: #e2e8f0;
-      color: #4a5568;
+    .btn.primary {
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      border-color: rgba(184, 172, 255, 0.45);
+      color: #f2f5ff;
     }
 
-    .btn-secondary:hover {
-      background: #cbd5e0;
+    .btn.secondary {
+      background: #323c52;
+      border-color: #465473;
     }
 
-    .btn-danger {
-      background: #f56565;
-      color: white;
+    .btn.ghost {
+      background: transparent;
+      border-color: var(--line);
+      color: var(--muted);
     }
 
-    .btn-group {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 16px;
+    .btn.full {
+      width: 100%;
     }
 
-    .output {
-      background: #1a202c;
-      color: #e2e8f0;
-      padding: 16px;
-      border-radius: 6px;
-      min-height: 200px;
-      max-height: 400px;
-      overflow-y: auto;
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      word-wrap: break-word;
-    }
-
-    .grid {
+    .kv {
+      margin-bottom: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      border-radius: 7px;
+      padding: 8px;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 12px;
+      gap: 2px;
     }
 
-    .config-row {
+    .kv span {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .kv strong {
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .inline-toggle {
       display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
+      align-items: center;
+      gap: 7px;
+      margin-top: 2px;
+      margin-bottom: 4px;
     }
 
-    .config-item {
-      flex: 1;
-      min-width: 150px;
-    }
-
-    .info-badge {
-      display: inline-block;
-      padding: 4px 12px;
-      background: #667eea;
-      color: white;
-      border-radius: 12px;
+    .inline-toggle label {
+      margin: 0;
       font-size: 12px;
-      margin-right: 8px;
+      color: var(--text);
     }
 
-    .model-list {
-      max-height: 300px;
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .chat-pane {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      gap: 10px;
+    }
+
+    .chat-stream {
+      min-height: 0;
       overflow-y: auto;
-      border: 2px solid #e2e8f0;
-      border-radius: 6px;
+      background: var(--chat-bg);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
       padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
 
-    .model-item {
-      padding: 12px;
-      border-bottom: 1px solid #e2e8f0;
-      cursor: pointer;
-      transition: background 0.2s;
+    .msg {
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      display: grid;
+      gap: 5px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
-    .model-item:hover {
-      background: #f7fafc;
+    .msg.user {
+      background: var(--user);
+      border-color: #4f5d82;
     }
 
-    .model-item:last-child {
-      border-bottom: none;
+    .msg.assistant {
+      background: var(--assistant);
+      border-color: #48537a;
     }
 
-    .model-name {
-      font-weight: 600;
-      color: #2d3748;
-    }
-
-    .model-info {
+    .msg.event {
+      background: var(--event);
+      border-style: dashed;
+      border-color: #43506c;
+      color: #b2bfda;
       font-size: 12px;
-      color: #718096;
-      margin-top: 4px;
     }
 
-    .loading {
-      display: inline-block;
-      width: 16px;
-      height: 16px;
-      border: 2px solid #e2e8f0;
-      border-top-color: #667eea;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+    .msg-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
     }
 
-    @keyframes spin {
-      to { transform: rotate(360deg); }
+    .message-text {
+      font-size: 13px;
+      line-height: 1.55;
     }
 
-    .hidden {
-      display: none;
+    .composer {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+    }
+
+    #promptInput {
+      margin: 0;
+      min-height: 84px;
+      max-height: 32vh;
+      resize: vertical;
+      background: #1b212c;
+      border-color: #3c4964;
+    }
+
+    #sendBtn {
+      align-self: end;
+      height: 84px;
+      min-width: 90px;
+      font-size: 13px;
+    }
+
+    .disabled {
+      opacity: 0.58;
+      pointer-events: none;
+    }
+
+    @media (max-width: 1080px) {
+      .workspace {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        max-height: 42vh;
+      }
+
+      .top-meta {
+        display: none;
+      }
+
+      #statusLine {
+        max-width: 84vw;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🚀 LLMWS Enhanced</h1>
+  <div class="app">
+    <header class="topbar">
+      <div class="status-wrap">
+        <div id="statusDot" class="status-dot"></div>
+        <div id="statusLine">Disconnected</div>
+      </div>
+      <div class="top-meta">
+        <div id="metaServer">server: -</div>
+        <div id="metaModel">model: -</div>
+        <div id="metaSession">session: -</div>
+      </div>
+    </header>
 
-    <!-- Status Card -->
-    <div class="card">
-      <div class="status-bar">
-        <div class="status-indicator">
-          <div class="status-dot" id="statusDot"></div>
-          <span id="statusText">Disconnected</span>
+    <div class="workspace">
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>Server</h2>
+          <label for="serverInput">Address</label>
+          <input id="serverInput" type="text" list="serverHistory" autocomplete="off" placeholder="localhost:8765" value="localhost:8765">
+          <datalist id="serverHistory"></datalist>
+          <p class="hint">Auto-connect after edit. Format: <code>localhost:8765</code> or <code>ws://host:port</code>.</p>
+          <div class="row">
+            <button class="btn secondary" id="disconnectBtn">Disconnect</button>
+            <button class="btn ghost" id="clearChatBtn">Clear Chat</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Models</h2>
+          <div class="kv">
+            <span>Loaded</span>
+            <strong id="loadedModel">-</strong>
+          </div>
+          <label for="modelSelect">Available</label>
+          <select id="modelSelect"></select>
+          <div class="row">
+            <button class="btn ghost" id="refreshModelsBtn">Refresh</button>
+            <button class="btn primary" id="switchModelBtn">Load Selected</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Endpoint Tools</h2>
+          <div class="row">
+            <button class="btn ghost" id="statusBtn">Get Status</button>
+            <button class="btn ghost" id="resourcesBtn">Resources</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Download Model</h2>
+          <label for="repoInput">Repository URL</label>
+          <input id="repoInput" type="text" placeholder="https://huggingface.co/org/model">
+          <label for="targetInput">Target Directory</label>
+          <input id="targetInput" type="text" placeholder="model-name">
+          <p class="hint" id="targetHint">Target auto-filled from repo URL, editable.</p>
+          <button class="btn primary full" id="downloadBtn">Download</button>
+        </section>
+
+        <section class="panel">
+          <h2>Generation</h2>
+          <label for="systemPrompt">System Prompt</label>
+          <textarea id="systemPrompt" placeholder="Optional system prompt..."></textarea>
+
+          <div class="grid-2">
+            <div>
+              <label for="temperature">Temperature</label>
+              <input id="temperature" type="number" value="0.0" min="0" max="2" step="0.1">
+            </div>
+            <div>
+              <label for="topP">Top P</label>
+              <input id="topP" type="number" value="1.0" min="0" max="1" step="0.05">
+            </div>
+            <div>
+              <label for="topK">Top K</label>
+              <input id="topK" type="number" value="50" min="0" step="1">
+            </div>
+            <div>
+              <label for="maxTokens">Max Tokens</label>
+              <input id="maxTokens" type="number" value="256" min="1" step="32">
+            </div>
+            <div>
+              <label for="repPenalty">Rep. Penalty</label>
+              <input id="repPenalty" type="number" value="1.05" min="1" step="0.05">
+            </div>
+          </div>
+          <div class="inline-toggle">
+            <input id="doSample" type="checkbox">
+            <label for="doSample">Sampling</label>
+          </div>
+        </section>
+      </aside>
+
+      <main class="chat-pane">
+        <div class="chat-stream" id="chatStream"></div>
+        <div class="composer">
+          <textarea id="promptInput" placeholder="Type message... Enter = send, Shift+Enter = new line"></textarea>
+          <button class="btn primary" id="sendBtn">Send</button>
         </div>
-        <div id="sessionInfo"></div>
-      </div>
-    </div>
-
-    <!-- Connection Card -->
-    <div class="card">
-      <h2>Connection</h2>
-      <div class="form-group">
-        <label>Server Address</label>
-        <input type="text" id="serverHost" value="localhost:8765" placeholder="host:port">
-      </div>
-      <div class="form-group">
-        <label>Session ID (optional - for reconnect)</label>
-        <input type="text" id="sessionId" placeholder="Leave empty for new session">
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" id="connectBtn">Connect</button>
-        <button class="btn btn-secondary" id="disconnectBtn">Disconnect</button>
-        <button class="btn btn-secondary" id="resourcesBtn">Show Resources</button>
-        <button class="btn btn-secondary" id="modelsBtn">List Models</button>
-      </div>
-    </div>
-
-    <!-- Chat Card -->
-    <div class="card" id="chatCard" class="hidden">
-      <h2>Chat</h2>
-      <div class="form-group">
-        <label>System Prompt</label>
-        <textarea id="systemPrompt" placeholder="You are a helpful assistant..."></textarea>
-      </div>
-      <div class="form-group">
-        <label>User Prompt</label>
-        <textarea id="userPrompt" placeholder="Type your message..."></textarea>
-      </div>
-      
-      <!-- Config -->
-      <details style="margin-bottom: 16px;">
-        <summary style="cursor: pointer; font-weight: 600; margin-bottom: 12px;">⚙️ Configuration</summary>
-        <div class="config-row">
-          <div class="config-item">
-            <label>Temperature</label>
-            <input type="number" id="temperature" value="0.7" step="0.1" min="0" max="2">
-          </div>
-          <div class="config-item">
-            <label>Top-p</label>
-            <input type="number" id="topP" value="0.95" step="0.05" min="0" max="1">
-          </div>
-          <div class="config-item">
-            <label>Top-k</label>
-            <input type="number" id="topK" value="50" step="1" min="0">
-          </div>
-          <div class="config-item">
-            <label>Max Tokens</label>
-            <input type="number" id="maxTokens" value="2048" step="128">
-          </div>
-          <div class="config-item">
-            <label>Repetition Penalty</label>
-            <input type="number" id="repPenalty" value="1.1" step="0.05" min="1">
-          </div>
-        </div>
-      </details>
-
-      <button class="btn btn-primary" id="sendBtn" style="width: 100%;">Send</button>
-
-      <div class="form-group" style="margin-top: 20px;">
-        <label>Output</label>
-        <div class="output" id="output"></div>
-      </div>
-    </div>
-
-    <!-- Models Card -->
-    <div class="card" id="modelsCard" class="hidden">
-      <h2>Models</h2>
-      <div class="model-list" id="modelList">
-        <p style="text-align: center; color: #718096;">No models loaded</p>
-      </div>
-      <div style="margin-top: 16px;">
-        <h3 style="font-size: 1.2em; margin-bottom: 8px;">Download Model</h3>
-        <div class="form-group">
-          <label>Repository URL</label>
-          <input type="text" id="repoUrl" placeholder="https://huggingface.co/org/model">
-        </div>
-        <div class="form-group">
-          <label>Target Directory Name</label>
-          <input type="text" id="targetDir" placeholder="model-name">
-        </div>
-        <button class="btn btn-primary" id="downloadBtn">Download</button>
-      </div>
+      </main>
     </div>
   </div>
 
   <script>
-    let ws = null;
-    let currentSessionId = null;
-    let isConnected = false;
+    const STORAGE_HOSTS_KEY = 'llmws_hosts_v1';
+    const STORAGE_LAST_HOST_KEY = 'llmws_last_host_v1';
 
-    const elements = {
-      statusDot: document.getElementById('statusDot'),
-      statusText: document.getElementById('statusText'),
-      sessionInfo: document.getElementById('sessionInfo'),
-      connectBtn: document.getElementById('connectBtn'),
-      disconnectBtn: document.getElementById('disconnectBtn'),
-      resourcesBtn: document.getElementById('resourcesBtn'),
-      modelsBtn: document.getElementById('modelsBtn'),
-      sendBtn: document.getElementById('sendBtn'),
-      downloadBtn: document.getElementById('downloadBtn'),
-      chatCard: document.getElementById('chatCard'),
-      modelsCard: document.getElementById('modelsCard'),
-      output: document.getElementById('output'),
-      modelList: document.getElementById('modelList'),
+    const state = {
+      ws: null,
+      wsUri: '',
+      connected: false,
+      connecting: false,
+      connectAttempt: 0,
+      sessionId: null,
+      availableModels: [],
+      loadedModelPath: null,
+      hostHistory: [],
+      autoConnectTimer: null,
+      activeAssistantNode: null,
+      targetTouched: false,
     };
 
-    function setStatus(connected, message = '') {
-      isConnected = connected;
-      if (connected) {
-        elements.statusDot.classList.remove('disconnected');
-        elements.statusText.textContent = message || 'Connected';
-        elements.chatCard.classList.remove('hidden');
-      } else {
-        elements.statusDot.classList.add('disconnected');
-        elements.statusText.textContent = message || 'Disconnected';
-        elements.chatCard.classList.add('hidden');
+    const els = {
+      statusDot: document.getElementById('statusDot'),
+      statusLine: document.getElementById('statusLine'),
+      metaServer: document.getElementById('metaServer'),
+      metaModel: document.getElementById('metaModel'),
+      metaSession: document.getElementById('metaSession'),
+      serverInput: document.getElementById('serverInput'),
+      serverHistory: document.getElementById('serverHistory'),
+      disconnectBtn: document.getElementById('disconnectBtn'),
+      clearChatBtn: document.getElementById('clearChatBtn'),
+      sendBtn: document.getElementById('sendBtn'),
+      promptInput: document.getElementById('promptInput'),
+      systemPrompt: document.getElementById('systemPrompt'),
+      temperature: document.getElementById('temperature'),
+      topP: document.getElementById('topP'),
+      topK: document.getElementById('topK'),
+      maxTokens: document.getElementById('maxTokens'),
+      repPenalty: document.getElementById('repPenalty'),
+      doSample: document.getElementById('doSample'),
+      chatStream: document.getElementById('chatStream'),
+      modelSelect: document.getElementById('modelSelect'),
+      loadedModel: document.getElementById('loadedModel'),
+      refreshModelsBtn: document.getElementById('refreshModelsBtn'),
+      switchModelBtn: document.getElementById('switchModelBtn'),
+      statusBtn: document.getElementById('statusBtn'),
+      resourcesBtn: document.getElementById('resourcesBtn'),
+      repoInput: document.getElementById('repoInput'),
+      targetInput: document.getElementById('targetInput'),
+      targetHint: document.getElementById('targetHint'),
+      downloadBtn: document.getElementById('downloadBtn'),
+    };
+
+    function nowClock() {
+      return new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+    }
+
+    function normalizeHost(rawHost) {
+      const value = String(rawHost || '').trim();
+      if (!value) return null;
+      const withProto = value.startsWith('ws://') || value.startsWith('wss://') ? value : `ws://${value}`;
+      try {
+        const url = new URL(withProto);
+        if (!url.host) return null;
+        url.pathname = '/';
+        return url.toString().replace(/\/$/, '');
+      } catch {
+        return null;
       }
     }
 
-    function appendOutput(text, newline = false) {
-      if (newline) elements.output.textContent += '\n';
-      elements.output.textContent += text;
-      elements.output.scrollTop = elements.output.scrollHeight;
+    function displayHost(uri) {
+      try {
+        return new URL(uri).host;
+      } catch {
+        return uri || '-';
+      }
     }
 
-    function clearOutput() {
-      elements.output.textContent = '';
+    function toHistoryValue(host) {
+      const value = String(host || '').trim();
+      if (!value) return '';
+      if (value.startsWith('ws://')) return value.slice(5);
+      if (value.startsWith('wss://')) return value;
+      return value;
     }
 
-    async function connect() {
-      const host = document.getElementById('serverHost').value.trim();
-      const sessionId = document.getElementById('sessionId').value.trim();
-      const uri = host.startsWith('ws') ? host : `ws://${host}`;
+    function readHostHistory() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORAGE_HOSTS_KEY) || '[]');
+        if (Array.isArray(parsed)) {
+          return parsed.filter((x) => typeof x === 'string' && x.trim());
+        }
+      } catch {}
+      return [];
+    }
+
+    function saveHostHistory() {
+      localStorage.setItem(STORAGE_HOSTS_KEY, JSON.stringify(state.hostHistory.slice(0, 12)));
+    }
+
+    function rememberHost(raw) {
+      const host = toHistoryValue(raw);
+      if (!host) return;
+      state.hostHistory = [host, ...state.hostHistory.filter((item) => item !== host)].slice(0, 12);
+      localStorage.setItem(STORAGE_LAST_HOST_KEY, host);
+      saveHostHistory();
+      renderHostHistory();
+    }
+
+    function renderHostHistory() {
+      els.serverHistory.innerHTML = state.hostHistory.map((host) => `<option value="${escapeHtml(host)}"></option>`).join('');
+    }
+
+    function setConnectionUI(mode, detail) {
+      const host = state.wsUri ? displayHost(state.wsUri) : toHistoryValue(els.serverInput.value);
+      const prefix = mode === 'connected' ? 'Connected' : mode === 'connecting' ? 'Connecting' : 'Disconnected';
+      const statusText = detail ? `${prefix} • ${detail}` : `${prefix} • ${host || '-'}`;
+
+      els.statusDot.classList.toggle('connected', mode === 'connected');
+      els.statusLine.textContent = statusText;
+      els.metaServer.textContent = `server: ${host || '-'}`;
+      els.metaSession.textContent = `session: ${state.sessionId ? state.sessionId.slice(0, 8) + '…' : '-'}`;
+      els.metaModel.textContent = `model: ${state.loadedModelPath ? shortModel(state.loadedModelPath) : '-'}`;
+
+      const connected = mode === 'connected';
+      state.connected = connected;
+      state.connecting = mode === 'connecting';
+
+      els.sendBtn.classList.toggle('disabled', !connected);
+      els.switchModelBtn.classList.toggle('disabled', !connected);
+      els.refreshModelsBtn.classList.toggle('disabled', !connected);
+      els.statusBtn.classList.toggle('disabled', !connected);
+      els.resourcesBtn.classList.toggle('disabled', !connected);
+      els.downloadBtn.classList.toggle('disabled', !connected);
+    }
+
+    function shortModel(pathLike) {
+      if (!pathLike) return '-';
+      const value = String(pathLike);
+      const chunks = value.split('/').filter(Boolean);
+      return chunks[chunks.length - 1] || value;
+    }
+
+    function closeSocket(sendAck) {
+      if (!state.ws) return;
+      try {
+        if (sendAck && state.ws.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify({type: 'ack'}));
+        }
+      } catch {}
+      try {
+        state.ws.close();
+      } catch {}
+      state.ws = null;
+      state.activeAssistantNode = null;
+    }
+
+    function connectToServer(rawHost) {
+      const uri = normalizeHost(rawHost);
+      if (!uri) {
+        setConnectionUI('disconnected', 'invalid address');
+        return;
+      }
+
+      if (state.connected && state.wsUri === uri && state.ws && state.ws.readyState === WebSocket.OPEN) {
+        return;
+      }
+
+      closeSocket(false);
+      state.wsUri = uri;
+      const thisAttempt = ++state.connectAttempt;
+      setConnectionUI('connecting', displayHost(uri));
+
+      const socket = new WebSocket(uri);
+      state.ws = socket;
+
+      socket.onopen = () => {
+        if (thisAttempt !== state.connectAttempt) {
+          socket.close();
+          return;
+        }
+        const hello = state.sessionId ? {session_id: state.sessionId} : {};
+        socket.send(JSON.stringify(hello));
+      };
+
+      socket.onmessage = (event) => {
+        if (thisAttempt !== state.connectAttempt) return;
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch {
+          addEvent('Invalid JSON frame from server');
+          return;
+        }
+        handleMessage(data);
+      };
+
+      socket.onerror = () => {
+        if (thisAttempt !== state.connectAttempt) return;
+        setConnectionUI('disconnected', `error • ${displayHost(uri)}`);
+      };
+
+      socket.onclose = () => {
+        if (thisAttempt !== state.connectAttempt) return;
+        if (state.connected || state.connecting) {
+          setConnectionUI('disconnected', displayHost(uri));
+          addEvent('Socket closed');
+        }
+        state.ws = null;
+        state.activeAssistantNode = null;
+      };
+    }
+
+    function scheduleAutoConnect() {
+      if (state.autoConnectTimer) clearTimeout(state.autoConnectTimer);
+      state.autoConnectTimer = setTimeout(() => {
+        connectToServer(els.serverInput.value);
+      }, 650);
+    }
+
+    function sendJson(payload) {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        addEvent('Not connected');
+        return false;
+      }
+      state.ws.send(JSON.stringify(payload));
+      return true;
+    }
+
+    function addMessage(role, text, meta) {
+      const node = document.createElement('div');
+      node.className = `msg ${role}`;
+
+      const head = document.createElement('div');
+      head.className = 'msg-head';
+      const left = document.createElement('span');
+      left.textContent = role;
+      const right = document.createElement('span');
+      right.textContent = meta || nowClock();
+      head.appendChild(left);
+      head.appendChild(right);
+
+      const body = document.createElement('div');
+      body.className = 'message-text';
+      body.textContent = text || '';
+
+      node.appendChild(head);
+      node.appendChild(body);
+      els.chatStream.appendChild(node);
+      els.chatStream.scrollTop = els.chatStream.scrollHeight;
+      return {node, body};
+    }
+
+    function addEvent(text) {
+      addMessage('event', text, nowClock());
+    }
+
+    function beginAssistantMessage() {
+      const result = addMessage('assistant', '', 'streaming');
+      state.activeAssistantNode = result;
+      return result;
+    }
+
+    function appendAssistantToken(token) {
+      if (!state.activeAssistantNode) beginAssistantMessage();
+      state.activeAssistantNode.body.textContent += token;
+      els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    }
+
+    function endAssistantMessage(totalTokens) {
+      if (!state.activeAssistantNode) {
+        addEvent(`done • ${totalTokens || 0} tokens`);
+        return;
+      }
+      const headRight = state.activeAssistantNode.node.querySelector('.msg-head span:last-child');
+      if (headRight) headRight.textContent = `${nowClock()} • ${totalTokens || 0} tok`;
+      state.activeAssistantNode = null;
+      els.chatStream.scrollTop = els.chatStream.scrollHeight;
+    }
+
+    function clearChat() {
+      els.chatStream.innerHTML = '';
+      state.activeAssistantNode = null;
+      addEvent('Chat cleared');
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function updateLoadedModel(pathOrName) {
+      state.loadedModelPath = pathOrName || null;
+      els.loadedModel.textContent = pathOrName ? shortModel(pathOrName) : '-';
+      els.metaModel.textContent = `model: ${pathOrName ? shortModel(pathOrName) : '-'}`;
+
+      if (!els.modelSelect.options.length) return;
+      if (!pathOrName) return;
+
+      const direct = [...els.modelSelect.options].find((opt) => opt.value === pathOrName);
+      if (direct) {
+        els.modelSelect.value = direct.value;
+        return;
+      }
+
+      const byName = [...els.modelSelect.options].find((opt) => opt.dataset.name === shortModel(pathOrName));
+      if (byName) els.modelSelect.value = byName.value;
+    }
+
+    function renderModelOptions() {
+      const models = state.availableModels || [];
+      if (!models.length) {
+        els.modelSelect.innerHTML = '<option value="">No models found</option>';
+        return;
+      }
+
+      els.modelSelect.innerHTML = models.map((model) => {
+        const label = `${model.name} (${Math.round(model.size_mb || 0)} MB, ${model.source || 'unknown'})`;
+        return `<option value="${escapeHtml(model.path)}" data-name="${escapeHtml(model.name)}">${escapeHtml(label)}</option>`;
+      }).join('');
+
+      if (state.loadedModelPath) {
+        updateLoadedModel(state.loadedModelPath);
+      }
+    }
+
+    function requestModels() {
+      sendJson({type: 'list_models'});
+    }
+
+    function requestStatus() {
+      sendJson({type: 'get_status'});
+    }
+
+    function requestResources() {
+      sendJson({type: 'get_resources'});
+    }
+
+    function switchSelectedModel() {
+      const path = els.modelSelect.value;
+      if (!path) {
+        addEvent('No model selected');
+        return;
+      }
+      addEvent(`switch_model -> ${path}`);
+      sendJson({type: 'switch_model', model_path: path});
+    }
+
+    function deriveRepoModelName(repoUrl) {
+      const input = String(repoUrl || '').trim();
+      if (!input) return '';
 
       try {
-        ws = new WebSocket(uri);
-
-        ws.onopen = () => {
-          // Send hello with optional session_id
-          const hello = sessionId ? {session_id: sessionId} : {};
-          ws.send(JSON.stringify(hello));
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            handleMessage(data);
-          } catch (e) {
-            console.error('Parse error:', e);
-          }
-        };
-
-        ws.onerror = (error) => {
-          setStatus(false, 'Connection error');
-          console.error('WebSocket error:', error);
-        };
-
-        ws.onclose = () => {
-          setStatus(false);
-          ws = null;
-        };
-
-      } catch (e) {
-        setStatus(false, `Failed: ${e.message}`);
+        const url = new URL(input);
+        const parts = url.pathname.split('/').filter(Boolean);
+        return parts[parts.length - 1] || '';
+      } catch {
+        const simpleParts = input.split('/').filter(Boolean);
+        return simpleParts[simpleParts.length - 1] || '';
       }
     }
 
-    function disconnect() {
-      if (ws) {
-        // Send ack
-        ws.send(JSON.stringify({type: 'ack'}));
-        ws.close();
-        ws = null;
+    function sanitizeDirName(name) {
+      const raw = String(name || '').trim();
+      if (!raw) return '';
+      const cleaned = raw.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+/, '').replace(/-+$/, '');
+      return cleaned || 'model';
+    }
+
+    function uniqueModelDirName(baseName) {
+      const base = sanitizeDirName(baseName || 'model');
+      const existing = new Set((state.availableModels || []).map((m) => String(m.name || '').toLowerCase()));
+      if (!existing.has(base.toLowerCase())) return base;
+      let n = 1;
+      while (existing.has(`${base}_${n}`.toLowerCase())) n += 1;
+      return `${base}_${n}`;
+    }
+
+    function autoFillTargetFromRepo() {
+      if (state.targetTouched && els.targetInput.value.trim()) return;
+      const derived = deriveRepoModelName(els.repoInput.value);
+      const unique = uniqueModelDirName(derived || 'model');
+      els.targetInput.value = unique;
+      els.targetHint.textContent = 'Target auto-filled from repo URL, editable.';
+    }
+
+    function downloadModel() {
+      const repo = els.repoInput.value.trim();
+      let target = els.targetInput.value.trim();
+
+      if (!repo) {
+        addEvent('download_model: missing repository URL');
+        return;
       }
-      setStatus(false);
+
+      if (!target) {
+        target = uniqueModelDirName(deriveRepoModelName(repo) || 'model');
+        els.targetInput.value = target;
+      }
+
+      addEvent(`download_model -> ${repo} as ${target}`);
+      sendJson({type: 'download_model', repo: repo, target_dir: target});
+    }
+
+    async function sendInference() {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        addEvent('Send failed: not connected');
+        return;
+      }
+
+      const userText = els.promptInput.value;
+      if (!userText.trim()) return;
+
+      const config = {
+        temperature: Number.parseFloat(els.temperature.value),
+        top_p: Number.parseFloat(els.topP.value),
+        top_k: Number.parseInt(els.topK.value, 10),
+        max_new_tokens: Number.parseInt(els.maxTokens.value, 10),
+        repetition_penalty: Number.parseFloat(els.repPenalty.value),
+        do_sample: !!els.doSample.checked,
+      };
+
+      sendJson({type: 'config', data: config});
+      addMessage('user', userText);
+      beginAssistantMessage();
+
+      sendJson({
+        type: 'inference',
+        prompt: {
+          system: els.systemPrompt.value,
+          user: userText,
+        },
+      });
+
+      els.promptInput.value = '';
+      els.promptInput.focus();
+    }
+
+    function summarizeResources(data) {
+      const lines = [];
+      const cuda = data.cuda || {};
+      const model = data.model || {};
+
+      lines.push('resources');
+      if (cuda.device) {
+        lines.push(`gpu=${cuda.device}`);
+        if (typeof cuda.total_gb === 'number') lines.push(`vram=${cuda.total_gb.toFixed(1)}GB`);
+        if (typeof cuda.free_gb === 'number') lines.push(`free=${cuda.free_gb.toFixed(1)}GB`);
+      }
+      if (model.name) lines.push(`model=${model.name}`);
+      if (Array.isArray(data.available_models)) lines.push(`models=${data.available_models.length}`);
+      return lines.join(' • ');
     }
 
     function handleMessage(data) {
       const type = data.type;
 
-      if (type === 'welcome') {
-        currentSessionId = data.session_id;
-        const model = data.model || 'No model';
-        const caps = data.capabilities || {};
-        
-        setStatus(true, `Connected to ${model}`);
-        
-        elements.sessionInfo.innerHTML = `
-          <div style="font-size: 12px;">
-            <div>Session: ${currentSessionId.substring(0, 8)}...</div>
-            <div>Context: ${caps.max_context || 'N/A'} tokens</div>
-          </div>
-        `;
-
-        // Update session ID input
-        document.getElementById('sessionId').value = currentSessionId;
-
-      } else if (type === 'start') {
-        appendOutput(`[Generating ${data.max_tokens} tokens max...]\n\n`, false);
-
-      } else if (type === 'token') {
-        appendOutput(data.data, false);
-
-      } else if (type === 'done') {
-        appendOutput(`\n\n[Done - ${data.total_tokens} tokens]`, true);
-
-      } else if (type === 'error') {
-        appendOutput(`\n[ERROR: ${data.message}]`, true);
-
-      } else if (type === 'resources') {
-        displayResources(data);
-
-      } else if (type === 'models_list') {
-        displayModels(data.models);
-
-      } else if (type === 'log') {
-        appendOutput(data.message + '\n', false);
-
-      } else if (type === 'config_ack') {
-        console.log('Config updated:', data.config);
-      }
-    }
-
-    function displayResources(data) {
-      let info = '=== Server Resources ===\n\n';
-      
-      if (data.cuda) {
-        info += `GPU: ${data.cuda.device}\n`;
-        info += `  Total: ${data.cuda.total_gb.toFixed(1)} GB\n`;
-        info += `  Free: ${data.cuda.free_gb.toFixed(1)} GB\n`;
-        info += `  Compute: SM ${data.cuda.compute_capability[0]}.${data.cuda.compute_capability[1]}\n\n`;
-      }
-
-      if (data.model) {
-        info += `Current Model: ${data.model.name || 'None'}\n`;
-        info += `  Vision: ${data.model.vision}\n\n`;
-      }
-
-      if (data.available_models) {
-        info += `Available Models: ${data.available_models.length}\n`;
-        data.available_models.forEach(m => {
-          info += `  - ${m.name} (${m.size_mb.toFixed(0)} MB) [${m.source}]\n`;
-        });
-      }
-
-      clearOutput();
-      appendOutput(info, false);
-    }
-
-    function displayModels(models) {
-      elements.modelsCard.classList.remove('hidden');
-      
-      if (!models || models.length === 0) {
-        elements.modelList.innerHTML = '<p style="text-align: center; color: #718096;">No models available</p>';
-        return;
-      }
-
-      elements.modelList.innerHTML = models.map(m => `
-        <div class="model-item" onclick="switchModel('${m.path}')">
-          <div class="model-name">${m.name}</div>
-          <div class="model-info">
-            ${m.size_mb.toFixed(0)} MB • ${m.source} • ${m.path}
-          </div>
-        </div>
-      `).join('');
-    }
-
-    function switchModel(path) {
-      if (!ws) return;
-      
-      clearOutput();
-      appendOutput(`Switching to ${path}...\n`, false);
-      
-      ws.send(JSON.stringify({
-        type: 'switch_model',
-        model_path: path
-      }));
-    }
-
-    async function sendInference() {
-      if (!ws) {
-        alert('Not connected');
-        return;
-      }
-
-      const system = document.getElementById('systemPrompt').value;
-      const user = document.getElementById('userPrompt').value;
-
-      if (!user.trim()) {
-        alert('Please enter a prompt');
-        return;
-      }
-
-      // Update config first
-      const config = {
-        temperature: parseFloat(document.getElementById('temperature').value),
-        top_p: parseFloat(document.getElementById('topP').value),
-        top_k: parseInt(document.getElementById('topK').value),
-        max_new_tokens: parseInt(document.getElementById('maxTokens').value),
-        repetition_penalty: parseFloat(document.getElementById('repPenalty').value),
-        do_sample: true
-      };
-
-      ws.send(JSON.stringify({
-        type: 'config',
-        data: config
-      }));
-
-      // Wait a bit for config ack
-      await new Promise(r => setTimeout(r, 100));
-
-      // Clear output and send inference
-      clearOutput();
-      appendOutput(`You: ${user}\n\n`, false);
-      appendOutput('Assistant: ', false);
-
-      ws.send(JSON.stringify({
-        type: 'inference',
-        prompt: {
-          system: system,
-          user: user
+      switch (type) {
+        case 'welcome': {
+          state.sessionId = data.session_id || null;
+          rememberHost(els.serverInput.value);
+          updateLoadedModel(data.model || null);
+          setConnectionUI('connected', displayHost(state.wsUri));
+          addEvent(`welcome • session=${state.sessionId ? state.sessionId.slice(0, 8) : '-'} • model=${shortModel(data.model || '-')}`);
+          requestModels();
+          requestStatus();
+          break;
         }
-      }));
+        case 'start': {
+          addEvent(`generation started • max=${data.max_tokens}`);
+          break;
+        }
+        case 'token': {
+          appendAssistantToken(data.data || '');
+          break;
+        }
+        case 'done': {
+          endAssistantMessage(data.total_tokens || 0);
+          break;
+        }
+        case 'error': {
+          if (state.activeAssistantNode) {
+            appendAssistantToken(`\n[error] ${data.message || 'unknown error'}`);
+            endAssistantMessage(0);
+          } else {
+            addEvent(`error • ${data.message || 'unknown'}`);
+          }
+          break;
+        }
+        case 'log': {
+          addEvent(data.message || 'log');
+          break;
+        }
+        case 'status': {
+          if (data.model && data.model.path) {
+            updateLoadedModel(data.model.path);
+          } else if (data.model && data.model.name) {
+            updateLoadedModel(data.model.name);
+          }
+          const sessions = data.sessions !== undefined ? data.sessions : '?';
+          const modelName = (data.model && (data.model.name || shortModel(data.model.path || ''))) || '-';
+          addEvent(`status • model=${modelName} • sessions=${sessions}`);
+          break;
+        }
+        case 'resources': {
+          addEvent(summarizeResources(data));
+          break;
+        }
+        case 'models_list': {
+          state.availableModels = Array.isArray(data.models) ? data.models : [];
+          renderModelOptions();
+          autoFillTargetFromRepo();
+          addEvent(`models_list • count=${state.availableModels.length}`);
+          break;
+        }
+        case 'model_switched': {
+          addEvent(data.message || 'model switched');
+          if (data.status && data.status.path) {
+            updateLoadedModel(data.status.path);
+          }
+          requestModels();
+          requestStatus();
+          break;
+        }
+        case 'download_started': {
+          addEvent(data.message || 'download started');
+          break;
+        }
+        case 'ack_received': {
+          addEvent('ack received');
+          break;
+        }
+        default: {
+          if (type) {
+            addEvent(`event • ${type}`);
+          }
+          break;
+        }
+      }
     }
 
-    function getResources() {
-      if (!ws) return;
-      ws.send(JSON.stringify({type: 'get_resources'}));
+    function bindEvents() {
+      els.serverInput.addEventListener('input', scheduleAutoConnect);
+      els.serverInput.addEventListener('change', scheduleAutoConnect);
+      els.serverInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          connectToServer(els.serverInput.value);
+        }
+      });
+
+      els.disconnectBtn.addEventListener('click', () => {
+        closeSocket(true);
+        setConnectionUI('disconnected', displayHost(state.wsUri));
+      });
+
+      els.clearChatBtn.addEventListener('click', clearChat);
+      els.sendBtn.addEventListener('click', sendInference);
+      els.refreshModelsBtn.addEventListener('click', requestModels);
+      els.switchModelBtn.addEventListener('click', switchSelectedModel);
+      els.statusBtn.addEventListener('click', requestStatus);
+      els.resourcesBtn.addEventListener('click', requestResources);
+      els.downloadBtn.addEventListener('click', downloadModel);
+
+      els.repoInput.addEventListener('input', () => {
+        if (!state.targetTouched || !els.targetInput.value.trim()) {
+          autoFillTargetFromRepo();
+        }
+      });
+
+      els.targetInput.addEventListener('input', () => {
+        state.targetTouched = true;
+      });
+
+      els.promptInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          sendInference();
+        }
+      });
+
+      window.addEventListener('beforeunload', () => {
+        closeSocket(true);
+      });
     }
 
-    function listModels() {
-      if (!ws) return;
-      ws.send(JSON.stringify({type: 'list_models'}));
-    }
+    function init() {
+      state.hostHistory = readHostHistory();
+      renderHostHistory();
 
-    function downloadModel() {
-      if (!ws) return;
-      
-      const repo = document.getElementById('repoUrl').value.trim();
-      const target = document.getElementById('targetDir').value.trim();
-
-      if (!repo || !target) {
-        alert('Please fill in both fields');
-        return;
+      const lastHost = localStorage.getItem(STORAGE_LAST_HOST_KEY);
+      if (lastHost) {
+        els.serverInput.value = lastHost;
       }
 
-      clearOutput();
-      appendOutput('Starting download...\n', false);
-
-      ws.send(JSON.stringify({
-        type: 'download_model',
-        repo: repo,
-        target_dir: target
-      }));
+      addEvent('ready');
+      bindEvents();
+      setConnectionUI('disconnected', toHistoryValue(els.serverInput.value));
+      scheduleAutoConnect();
     }
 
-    // Event listeners
-    elements.connectBtn.addEventListener('click', connect);
-    elements.disconnectBtn.addEventListener('click', disconnect);
-    elements.resourcesBtn.addEventListener('click', getResources);
-    elements.modelsBtn.addEventListener('click', listModels);
-    elements.sendBtn.addEventListener('click', sendInference);
-    elements.downloadBtn.addEventListener('click', downloadModel);
-
-    // Enter key to send
-    document.getElementById('userPrompt').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && e.ctrlKey) {
-        sendInference();
-      }
-    });
+    init();
   </script>
 </body>
 </html>
