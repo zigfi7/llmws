@@ -1,6 +1,6 @@
 # LLMWS Status
 
-Last update (UTC): 2026-02-17 18:36:30
+Last update (UTC): 2026-02-17 19:03:33
 Visibility: public-safe tracker (no host/user identifiers)
 
 ## Product Direction
@@ -19,6 +19,25 @@ Visibility: public-safe tracker (no host/user identifiers)
 - Current validated inference paths:
   - `txt2txt` works end-to-end
   - `img+txt2txt` works end-to-end (with temporary compatibility guards)
+
+## Functional Audit (2026-02-17)
+
+- Environment management:
+  - `start.sh` supports `auto|venv|mamba` backend selection.
+  - `setup.sh` and `start.sh` bash syntax checks pass.
+  - Startup help and backend priority flow are working.
+- Training functions:
+  - No active training/fine-tuning API in `llmws.py` (no `train_*` handlers/endpoints).
+  - `var/models/` is currently only scanned/listed/deleted, not produced by server-side training logic.
+  - Docs reference user-trained models, but code path for training is missing in current tree.
+- Snapshot saving (`safetensors`):
+  - `save_file` from `safetensors.torch` is imported but not used.
+  - No explicit snapshot/checkpoint save command in current protocol handlers.
+- Multimodal implementation:
+  - Loader fallback to VLM path is implemented.
+  - Image parsing supports `path`, `base64`, `data_url`, `url`.
+  - Runtime supports `txt2txt` and `img+txt2txt` request flow.
+  - Current stack still relies on temporary multimodal safety guards noted below.
 
 ## Environment Snapshot (tested stack)
 
