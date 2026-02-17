@@ -1,6 +1,6 @@
 # LLMWS Status
 
-Last update (UTC): 2026-02-17 19:31:59
+Last update (UTC): 2026-02-17 19:54:31
 Visibility: public-safe tracker (no host/user identifiers)
 
 ## Product Direction
@@ -63,6 +63,9 @@ Visibility: public-safe tracker (no host/user identifiers)
 6. Added operational tracker workflow (public + private split).
 7. Stabilized runtime against known CUDA/runtime crashes on current stack.
 8. Revalidated full runtime on `dl8` after deployment sync; restored model directory and rechecked all critical paths.
+9. Revalidated training stack on ARM/Blackwell target with current startup scripts and mamba runtime.
+10. Improved snapshot persistence reliability by moving heavy snapshot writes off the asyncio event loop.
+11. Enabled TF32 runtime preference on modern NVIDIA architectures for higher throughput.
 
 ## Recovery Notes (2026-02-17)
 
@@ -88,6 +91,7 @@ Visibility: public-safe tracker (no host/user identifiers)
 - Generation quality with current Molmo2 runtime stack is inconsistent.
 - Runtime relies on temporary compatibility guards that should be eliminated by proper version alignment.
 - Deployment process still needs full standardization for multi-host rollouts.
+- Snapshot ownership follows service user; root-run services still produce root-owned checkpoints.
 
 ## Next Steps (No-Workaround Direction)
 

@@ -618,6 +618,16 @@ async def load_model(model_path: str):
         
         # Check CUDA
         compute_capability = check_cuda_compatibility()
+
+        # Prefer TF32 on modern NVIDIA GPUs for faster matmul paths with minimal quality impact.
+        if compute_capability[0] >= 8:
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.set_float32_matmul_precision("high")
+                print("  tf32: enabled")
+            except Exception:
+                pass
         
         # Blackwell GB10 (SM 12.x) - use SDPA with cuDNN backend (fastest on Blackwell)
         # PyTorch 2.10+cu130 has native cuDNN SDPA support for SM 12.x
@@ -896,6 +906,28 @@ def _snapshot_target_dir() -> Path:
     target.mkdir(parents=True, exist_ok=True)
     return target
 
+def _write_snapshot_artifacts(snapshot_path: Path):
+    # Keep snapshot persistence off the event loop; this can be very heavy for large models.
+    state_dict = {
+        key: value.detach().cpu().contiguous()
+        for key, value in model.state_dict().items()
+        if torch.is_tensor(value)
+    }
+    save_file(state_dict, str(snapshot_path / "model.safetensors"))
+
+    if hasattr(model, "config") and model.config is not None:
+        model.config.save_pretrained(str(snapshot_path))
+
+    save_tokenizer = tokenizer or getattr(processor, "tokenizer", None)
+    if save_tokenizer is not None:
+        save_tokenizer.save_pretrained(str(snapshot_path))
+
+    if processor is not None:
+        try:
+            processor.save_pretrained(str(snapshot_path))
+        except Exception:
+            pass
+
 async def save_model_snapshot(name: Optional[str] = None) -> str:
     global available_models
     if model is None:
@@ -907,26 +939,7 @@ async def save_model_snapshot(name: Optional[str] = None) -> str:
     snapshot_path.mkdir(parents=True, exist_ok=False)
 
     try:
-        # Save in safetensors format for portability and safety.
-        state_dict = {
-            key: value.detach().cpu().contiguous()
-            for key, value in model.state_dict().items()
-            if torch.is_tensor(value)
-        }
-        save_file(state_dict, str(snapshot_path / "model.safetensors"))
-
-        if hasattr(model, "config") and model.config is not None:
-            model.config.save_pretrained(str(snapshot_path))
-
-        save_tokenizer = tokenizer or getattr(processor, "tokenizer", None)
-        if save_tokenizer is not None:
-            save_tokenizer.save_pretrained(str(snapshot_path))
-
-        if processor is not None:
-            try:
-                processor.save_pretrained(str(snapshot_path))
-            except Exception:
-                pass
+        await asyncio.to_thread(_write_snapshot_artifacts, snapshot_path)
 
         available_models = scan_models()
         return str(snapshot_path)
