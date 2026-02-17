@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 import torch
+import torch.nn.functional as F
 import websockets
 from websockets.exceptions import WebSocketException
 from torch.utils.data import Dataset, DataLoader
@@ -1058,12 +1059,39 @@ async def handle_train_request(websocket, session_id: str, message: Dict[str, An
                 for batch in loader:
                     steps_done += 1
                     input_ids, attention_mask, labels = [tensor.to(device) for tensor in batch]
-                    outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
-                    )
-                    loss = outputs.loss / train_cfg["gradient_accumulation"]
+                    with torch.enable_grad():
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            labels=labels,
+                        )
+
+                        raw_loss = getattr(outputs, "loss", None)
+                        logits = getattr(outputs, "logits", None)
+
+                        # Some multimodal backbones can return detached loss tensors.
+                        # Fallback to explicit CE loss over shifted logits.
+                        if raw_loss is None or not raw_loss.requires_grad:
+                            if logits is None:
+                                raise RuntimeError("Model returned no logits for training")
+                            if logits.size(1) < 2:
+                                raise RuntimeError("Not enough tokens to compute training loss")
+                            shift_logits = logits[:, :-1, :].contiguous()
+                            shift_labels = labels[:, 1:].contiguous()
+                            raw_loss = F.cross_entropy(
+                                shift_logits.view(-1, shift_logits.size(-1)),
+                                shift_labels.view(-1),
+                                ignore_index=-100,
+                            )
+
+                        if not raw_loss.requires_grad:
+                            logits_grad = getattr(logits, "requires_grad", None)
+                            raise RuntimeError(
+                                "Training loss has no grad_fn "
+                                f"(loss.requires_grad={raw_loss.requires_grad}, logits.requires_grad={logits_grad})"
+                            )
+
+                        loss = raw_loss / train_cfg["gradient_accumulation"]
                     loss.backward()
 
                     if steps_done % train_cfg["gradient_accumulation"] == 0:
@@ -1071,7 +1099,7 @@ async def handle_train_request(websocket, session_id: str, message: Dict[str, An
                         optimizer.zero_grad(set_to_none=True)
 
                     if steps_done % train_cfg["log_every"] == 0:
-                        loss_value = float(loss.item() * train_cfg["gradient_accumulation"])
+                        loss_value = float(raw_loss.item())
                         train_status["steps_done"] = steps_done
                         train_status["last_loss"] = loss_value
                         await _send_train_event(websocket, session_id, {

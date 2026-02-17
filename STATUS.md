@@ -1,6 +1,6 @@
 # LLMWS Status
 
-Last update (UTC): 2026-02-17 19:19:00
+Last update (UTC): 2026-02-17 19:31:59
 Visibility: public-safe tracker (no host/user identifiers)
 
 ## Product Direction
@@ -19,6 +19,10 @@ Visibility: public-safe tracker (no host/user identifiers)
 - Current validated inference paths:
   - `txt2txt` works end-to-end
   - `img+txt2txt` works end-to-end (with temporary compatibility guards)
+- Current validated training/snapshot paths:
+  - `train_status` works
+  - `save_snapshot` writes `safetensors`
+  - `train` works on tiny JSONL smoke jobs
 
 ## Functional Audit (2026-02-17)
 
@@ -30,6 +34,7 @@ Visibility: public-safe tracker (no host/user identifiers)
   - Server API now supports `train` and `train_status`.
   - JSONL dataset training works with progress events (`train_started`, `train_progress`, `train_done`).
   - Added dedicated client: `llmws_train_client.py`.
+  - Added training-loss fallback to explicit CE over logits when model-provided loss is detached.
 - Snapshot saving (`safetensors`):
   - Server API now supports `save_snapshot`.
   - Snapshot saving is active via `safetensors` (`model.safetensors`) plus config/tokenizer artifacts.
@@ -57,6 +62,18 @@ Visibility: public-safe tracker (no host/user identifiers)
 5. Added `llmws_train_client.py` for training/status/snapshot operations.
 6. Added operational tracker workflow (public + private split).
 7. Stabilized runtime against known CUDA/runtime crashes on current stack.
+8. Revalidated full runtime on `dl8` after deployment sync; restored model directory and rechecked all critical paths.
+
+## Recovery Notes (2026-02-17)
+
+- A deployment sync attempt removed runtime model artifacts on target host.
+- Model payload was restored from upstream (`allenai/Molmo2-8B`) into runtime `models/`.
+- Post-recovery smoke checks passed for:
+  - `txt2txt`
+  - `img+txt2txt`
+  - `train_status`
+  - `save_snapshot`
+  - `train` (1-step smoke)
 
 ## Temporary Compatibility Logic (To Remove)
 
