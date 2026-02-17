@@ -12,3 +12,4 @@ micromamba/
 models/
 config.json
 startup.conf
+STATUS.private.md
