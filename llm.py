@@ -279,6 +279,44 @@ class LLMWSEnhancedClient:
             print(f"✓ {data.get('message')}")
         else:
             print(f"✗ {data.get('message')}")
+
+    async def save_snapshot(self, name: Optional[str] = None):
+        """Request server to save model snapshot"""
+        payload = {"type": "save_snapshot"}
+        if name:
+            payload["name"] = name
+        await self.websocket.send(json.dumps(payload))
+
+        response = await self.websocket.recv()
+        data = json.loads(response)
+        if data.get("type") == "snapshot_saved":
+            print(f"✓ Snapshot saved: {data.get('path')}")
+            return data.get("path")
+
+        print(f"✗ {data.get('message')}")
+        return None
+
+    async def get_train_status(self):
+        """Fetch current training status"""
+        await self.websocket.send(json.dumps({"type": "train_status"}))
+        response = await self.websocket.recv()
+        data = json.loads(response)
+        if data.get("type") != "train_status":
+            print(f"✗ {data.get('message', 'Unexpected response')}")
+            return None
+
+        status = data.get("training", {})
+        print("\n" + "=" * 60)
+        print("Training Status")
+        print("=" * 60)
+        print(f"Running: {status.get('running')}")
+        print(f"Request ID: {status.get('request_id')}")
+        print(f"Steps: {status.get('steps_done')}/{status.get('max_steps')}")
+        print(f"Last loss: {status.get('last_loss')}")
+        print(f"Checkpoint: {status.get('checkpoint')}")
+        print(f"Error: {status.get('error')}")
+        print("=" * 60 + "\n")
+        return status
     
     async def interactive_mode(self):
         """Interactive chat mode"""
@@ -292,6 +330,8 @@ class LLMWSEnhancedClient:
         print("  /switch <path>         - Switch model")
         print("  /download <repo> <dir> - Download model")
         print("  /delete <name>         - Delete model from var/")
+        print("  /snapshot [name]       - Save model snapshot")
+        print("  /train_status          - Show training status")
         print("  /session               - Show session ID")
         print("  /quit or /exit         - Exit")
         print("="*60 + "\n")
@@ -364,6 +404,12 @@ class LLMWSEnhancedClient:
                                 await self.delete_model(args)
                         else:
                             print("Usage: /delete <model_name>")
+
+                    elif command == '/snapshot':
+                        await self.save_snapshot(args if args else None)
+
+                    elif command in ['/train_status', '/trainstatus']:
+                        await self.get_train_status()
                     
                     elif command == '/session':
                         print(f"Session ID: {self.session_id}")

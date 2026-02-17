@@ -15,6 +15,7 @@ from urllib.request import urlopen
 import torch
 import websockets
 from websockets.exceptions import WebSocketException
+from torch.utils.data import Dataset, DataLoader
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -73,7 +74,8 @@ DEFAULT_CONFIG = {
         "models_dir": "models",
         "var_dir": "var",
         "sessions_dir": "var/sessions",
-        "logs_dir": "var/logs"
+        "logs_dir": "var/logs",
+        "datasets_dir": "var/datasets"
     },
     "limits": {
         "max_clients": 10,
@@ -115,7 +117,7 @@ def save_config():
 CONFIG = load_config()
 
 # Create directories
-for dir_key in ['models_dir', 'var_dir', 'sessions_dir', 'logs_dir']:
+for dir_key in ['models_dir', 'var_dir', 'sessions_dir', 'logs_dir', 'datasets_dir']:
     os.makedirs(CONFIG['paths'][dir_key], exist_ok=True)
 
 # ============================================================================
@@ -148,6 +150,18 @@ active_connections: Dict[Any, str] = {}  # websocket -> session_id
 request_queue: asyncio.Queue = asyncio.Queue()
 processing_lock = asyncio.Lock()
 current_model = None
+train_lock = asyncio.Lock()
+dataset_cache: Dict[str, str] = {}
+train_status = {
+    "running": False,
+    "request_id": None,
+    "started_at": None,
+    "steps_done": 0,
+    "max_steps": 0,
+    "last_loss": None,
+    "checkpoint": None,
+    "error": None,
+}
 
 # ============================================================================
 # SIMPLE BASE64 ENCRYPTION
@@ -775,6 +789,365 @@ async def load_model(model_path: str):
         return False
 
 # ============================================================================
+# TRAINING + SNAPSHOTS
+# ============================================================================
+
+def _sanitize_name(raw: Optional[str], default_prefix: str) -> str:
+    seed = (raw or "").strip() or f"{default_prefix}_{int(time.time())}"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", seed).strip("-.")
+    return cleaned or f"{default_prefix}_{int(time.time())}"
+
+def _sanitize_request_id(request_id: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(request_id)).strip("-.")
+    return cleaned or str(uuid.uuid4())
+
+def _unique_subdir(base_dir: Path, name: str) -> Path:
+    target = base_dir / name
+    if not target.exists():
+        return target
+    idx = 1
+    while True:
+        candidate = base_dir / f"{name}_{idx}"
+        if not candidate.exists():
+            return candidate
+        idx += 1
+
+def _line_to_train_text(line: str) -> str:
+    stripped = line.strip()
+    if not stripped:
+        return ""
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+
+    if not isinstance(obj, dict):
+        return stripped
+
+    input_keys = ("input", "prompt", "user", "instruction", "question", "text")
+    target_keys = ("target", "response", "assistant", "output", "answer", "completion", "label")
+
+    def pick(keys):
+        for key in keys:
+            value = obj.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, (int, float, bool)):
+                return str(value)
+        return ""
+
+    source_text = pick(input_keys)
+    target_text = pick(target_keys)
+
+    if source_text and target_text:
+        return f"{source_text}\n{target_text}"
+    if target_text:
+        return target_text
+    if source_text:
+        return source_text
+    return stripped
+
+class JsonlTrainDataset(Dataset):
+    def __init__(self, dataset_path: Path):
+        self.samples: List[str] = []
+        with dataset_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                sample = _line_to_train_text(line)
+                if sample:
+                    self.samples.append(sample)
+        if not self.samples:
+            raise ValueError("Dataset is empty after parsing")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        return self.samples[index]
+
+def _resolve_train_tokenizer():
+    train_tokenizer = tokenizer or getattr(processor, "tokenizer", None)
+    if train_tokenizer is None:
+        raise RuntimeError("Training requires tokenizer or processor.tokenizer")
+    if train_tokenizer.pad_token_id is None and train_tokenizer.eos_token_id is not None:
+        train_tokenizer.pad_token = train_tokenizer.eos_token
+    return train_tokenizer
+
+def _build_train_collate(train_tokenizer, max_seq_length: int):
+    def collate(batch_texts: List[str]):
+        encoded = train_tokenizer(
+            batch_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_seq_length,
+        )
+        input_ids = encoded["input_ids"]
+        attention_mask = encoded["attention_mask"]
+        labels = input_ids.clone()
+        labels[attention_mask == 0] = -100
+        return input_ids, attention_mask, labels
+    return collate
+
+def _snapshot_target_dir() -> Path:
+    target = Path(CONFIG['paths']['var_dir']) / "models"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+async def save_model_snapshot(name: Optional[str] = None) -> str:
+    global available_models
+    if model is None:
+        raise RuntimeError("No model loaded")
+
+    target_root = _snapshot_target_dir()
+    snapshot_name = _sanitize_name(name, "snapshot")
+    snapshot_path = _unique_subdir(target_root, snapshot_name)
+    snapshot_path.mkdir(parents=True, exist_ok=False)
+
+    try:
+        # Save in safetensors format for portability and safety.
+        state_dict = {
+            key: value.detach().cpu().contiguous()
+            for key, value in model.state_dict().items()
+            if torch.is_tensor(value)
+        }
+        save_file(state_dict, str(snapshot_path / "model.safetensors"))
+
+        if hasattr(model, "config") and model.config is not None:
+            model.config.save_pretrained(str(snapshot_path))
+
+        save_tokenizer = tokenizer or getattr(processor, "tokenizer", None)
+        if save_tokenizer is not None:
+            save_tokenizer.save_pretrained(str(snapshot_path))
+
+        if processor is not None:
+            try:
+                processor.save_pretrained(str(snapshot_path))
+            except Exception:
+                pass
+
+        available_models = scan_models()
+        return str(snapshot_path)
+    except Exception:
+        try:
+            shutil.rmtree(snapshot_path)
+        except Exception:
+            pass
+        raise
+
+async def _send_train_event(websocket, session_id: str, payload: Dict[str, Any]):
+    await websocket.send(json.dumps(payload))
+    session = sessions.get(session_id)
+    if session is not None:
+        session["buffer"].append(payload)
+
+def _merge_train_config(custom: Dict[str, Any]) -> Dict[str, Any]:
+    default_cfg = {
+        "max_steps": 50,
+        "batch_size": 1,
+        "learning_rate": 5e-5,
+        "max_seq_length": 2048,
+        "log_every": 5,
+        "save_every": 0,
+        "gradient_accumulation": 1,
+    }
+    cfg = dict(default_cfg)
+    cfg.update(custom or {})
+    cfg["max_steps"] = max(1, int(cfg["max_steps"]))
+    cfg["batch_size"] = max(1, int(cfg["batch_size"]))
+    cfg["max_seq_length"] = max(32, int(cfg["max_seq_length"]))
+    cfg["log_every"] = max(1, int(cfg["log_every"]))
+    cfg["save_every"] = max(0, int(cfg["save_every"]))
+    cfg["gradient_accumulation"] = max(1, int(cfg["gradient_accumulation"]))
+    cfg["learning_rate"] = float(cfg["learning_rate"])
+    return cfg
+
+async def handle_train_request(websocket, session_id: str, message: Dict[str, Any]):
+    request_id = str(message.get("request_id") or uuid.uuid4())
+    dataset_text = message.get("dataset")
+    resume = bool(message.get("resume", False))
+    save_ckpt = bool(message.get("save_checkpoint", True))
+    checkpoint_name = message.get("checkpoint_name")
+    train_cfg = _merge_train_config(message.get("config", {}))
+
+    if model is None:
+        await _send_train_event(websocket, session_id, {
+            "type": "error",
+            "message": "No model loaded",
+            "request_id": request_id,
+        })
+        return
+
+    dataset_path: Optional[Path] = None
+    rid_key = _sanitize_request_id(request_id)
+    datasets_dir = Path(CONFIG["paths"]["datasets_dir"])
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+
+    if isinstance(dataset_text, str) and dataset_text.strip():
+        dataset_path = datasets_dir / f"dataset_{rid_key}.jsonl"
+        dataset_path.write_text(dataset_text, encoding="utf-8")
+        dataset_cache[request_id] = str(dataset_path)
+    elif resume:
+        cached_path = dataset_cache.get(request_id)
+        if cached_path and Path(cached_path).exists():
+            dataset_path = Path(cached_path)
+    if dataset_path is None:
+        await _send_train_event(websocket, session_id, {
+            "type": "error",
+            "message": "No dataset provided and no cached dataset available for resume",
+            "request_id": request_id,
+        })
+        return
+
+    if train_lock.locked():
+        await _send_train_event(websocket, session_id, {
+            "type": "train_waiting",
+            "request_id": request_id,
+            "message": "Another training job is running, waiting for lock",
+        })
+
+    async with train_lock:
+        train_status.update({
+            "running": True,
+            "request_id": request_id,
+            "started_at": time.time(),
+            "steps_done": 0,
+            "max_steps": train_cfg["max_steps"],
+            "last_loss": None,
+            "checkpoint": None,
+            "error": None,
+        })
+
+        await _send_train_event(websocket, session_id, {
+            "type": "train_started",
+            "request_id": request_id,
+            "config": train_cfg,
+            "dataset_path": str(dataset_path),
+        })
+
+        model_config = getattr(model, "config", None)
+        had_use_cache = hasattr(model_config, "use_cache") if model_config is not None else False
+        previous_use_cache = getattr(model_config, "use_cache", None) if model_config is not None else None
+        if model_config is not None:
+            try:
+                setattr(model_config, "use_cache", False)
+            except Exception:
+                pass
+
+        try:
+            train_tokenizer = _resolve_train_tokenizer()
+            dataset = JsonlTrainDataset(dataset_path)
+            collate = _build_train_collate(train_tokenizer, train_cfg["max_seq_length"])
+            loader = DataLoader(
+                dataset,
+                batch_size=train_cfg["batch_size"],
+                shuffle=True,
+                collate_fn=collate,
+            )
+
+            params = [p for p in model.parameters() if p.requires_grad]
+            if not params:
+                raise RuntimeError("Model exposes no trainable parameters")
+            optimizer = torch.optim.AdamW(params, lr=train_cfg["learning_rate"])
+
+            steps_done = 0
+            model.train()
+
+            while steps_done < train_cfg["max_steps"]:
+                for batch in loader:
+                    steps_done += 1
+                    input_ids, attention_mask, labels = [tensor.to(device) for tensor in batch]
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                    )
+                    loss = outputs.loss / train_cfg["gradient_accumulation"]
+                    loss.backward()
+
+                    if steps_done % train_cfg["gradient_accumulation"] == 0:
+                        optimizer.step()
+                        optimizer.zero_grad(set_to_none=True)
+
+                    if steps_done % train_cfg["log_every"] == 0:
+                        loss_value = float(loss.item() * train_cfg["gradient_accumulation"])
+                        train_status["steps_done"] = steps_done
+                        train_status["last_loss"] = loss_value
+                        await _send_train_event(websocket, session_id, {
+                            "type": "train_progress",
+                            "request_id": request_id,
+                            "step": steps_done,
+                            "max_steps": train_cfg["max_steps"],
+                            "loss": loss_value,
+                        })
+
+                    if train_cfg["save_every"] and save_ckpt and (steps_done % train_cfg["save_every"] == 0):
+                        periodic_name = f"{_sanitize_name(checkpoint_name, 'train')}_step_{steps_done}"
+                        periodic_checkpoint = await save_model_snapshot(periodic_name)
+                        await _send_train_event(websocket, session_id, {
+                            "type": "train_checkpoint",
+                            "request_id": request_id,
+                            "step": steps_done,
+                            "path": periodic_checkpoint,
+                        })
+
+                    if steps_done >= train_cfg["max_steps"]:
+                        break
+                    await asyncio.sleep(0)
+
+            if steps_done % train_cfg["gradient_accumulation"] != 0:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+            model.eval()
+            checkpoint_path = None
+            if save_ckpt:
+                checkpoint_path = await save_model_snapshot(
+                    _sanitize_name(checkpoint_name, f"train_{rid_key}")
+                )
+
+            train_status.update({
+                "running": False,
+                "steps_done": steps_done,
+                "last_loss": train_status.get("last_loss"),
+                "checkpoint": checkpoint_path,
+                "error": None,
+            })
+
+            await _send_train_event(websocket, session_id, {
+                "type": "train_done",
+                "request_id": request_id,
+                "steps": steps_done,
+                "checkpoint": checkpoint_path,
+            })
+            save_session_buffer(session_id)
+
+        except Exception as err:
+            train_status.update({
+                "running": False,
+                "steps_done": train_status.get("steps_done", 0),
+                "error": str(err),
+            })
+            await _send_train_event(websocket, session_id, {
+                "type": "error",
+                "request_id": request_id,
+                "message": f"Training failed: {err}",
+            })
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        finally:
+            if model_config is not None:
+                try:
+                    if had_use_cache:
+                        setattr(model_config, "use_cache", previous_use_cache)
+                    elif hasattr(model_config, "use_cache"):
+                        delattr(model_config, "use_cache")
+                except Exception:
+                    pass
+            train_status["running"] = False
+
+# ============================================================================
 # INFERENCE
 # ============================================================================
 
@@ -1230,6 +1603,13 @@ async def handle_message(websocket, message: Dict, session_id: str):
         }))
     
     elif msg_type == 'inference':
+        if train_lock.locked():
+            await websocket.send(json.dumps({
+                "type": "error",
+                "message": "Training in progress. Inference is temporarily unavailable."
+            }))
+            return
+
         # Parse prompt
         prompt_data = message.get('prompt', {})
         top_level_images = message.get('images')
@@ -1272,6 +1652,7 @@ async def handle_message(websocket, message: Dict, session_id: str):
                 "path": current_model,
                 "vision": processor is not None
             },
+            "training": train_status,
             "available_models": available_models
         }
         await websocket.send(json.dumps(resources))
@@ -1323,9 +1704,33 @@ async def handle_message(websocket, message: Dict, session_id: str):
             "type": "status",
             "model": model_status,
             "memory": memory_info,
-            "sessions": len(sessions)
+            "sessions": len(sessions),
+            "training": train_status
         }))
-    
+
+    elif msg_type == 'train_status':
+        await websocket.send(json.dumps({
+            "type": "train_status",
+            "training": train_status
+        }))
+
+    elif msg_type == 'save_snapshot':
+        snapshot_name = message.get("name")
+        try:
+            path = await save_model_snapshot(snapshot_name)
+            await websocket.send(json.dumps({
+                "type": "snapshot_saved",
+                "path": path
+            }))
+        except Exception as err:
+            await websocket.send(json.dumps({
+                "type": "error",
+                "message": f"Snapshot failed: {err}"
+            }))
+
+    elif msg_type == 'train':
+        await handle_train_request(websocket, session_id, message)
+
     elif msg_type == 'download_model':
         # Download model via git-lfs (background)
         repo = message.get('repo')
@@ -1416,9 +1821,11 @@ async def handle_connection(websocket):
                 "flash_attention": use_flash_attention,
                 "sdpa": not use_flash_attention and compute_capability[0] >= 8,
                 "compute_capability": compute_capability,
-                "max_context": max_context
+                "max_context": max_context,
+                "training": True,
             },
-            "resources": memory_info
+            "resources": memory_info,
+            "training": train_status
         }
         await websocket.send(json.dumps(welcome))
         
