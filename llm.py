@@ -10,7 +10,7 @@ import sys
 import argparse
 import base64
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 class LLMWSEnhancedClient:
     def __init__(self, host: str = "localhost", port: int = 8765):
@@ -112,14 +112,18 @@ class LLMWSEnhancedClient:
         
         return False
     
-    async def inference(self, prompt: str, system: str = ""):
+    async def inference(self, prompt: str, system: str = "", images: Optional[List[Dict[str, str]]] = None):
         """Run inference with streaming"""
+        prompt_payload = {
+            "system": system,
+            "user": prompt
+        }
+        if images:
+            prompt_payload["images"] = images
+
         message = {
             "type": "inference",
-            "prompt": {
-                "system": system,
-                "user": prompt
-            },
+            "prompt": prompt_payload,
             "config": self.config
         }
         
@@ -392,6 +396,7 @@ async def main():
     parser.add_argument('--port', type=int, default=8765, help='Server port')
     parser.add_argument('-p', '--prompt', help='User prompt')
     parser.add_argument('-s', '--system', default='', help='System prompt')
+    parser.add_argument('--image', action='append', default=[], help='Image path (repeatable)')
     parser.add_argument('--session', help='Session ID to reconnect')
     parser.add_argument('--temperature', type=float, help='Temperature')
     parser.add_argument('--top-p', type=float, help='Top-p')
@@ -423,9 +428,11 @@ async def main():
         
         # Single prompt or interactive
         if args.prompt:
+            image_payload = [{"path": str(Path(p).expanduser())} for p in (args.image or [])]
             await client.inference(
                 prompt=args.prompt,
-                system=args.system
+                system=args.system,
+                images=image_payload if image_payload else None,
             )
         else:
             await client.interactive_mode()

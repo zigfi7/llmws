@@ -7,17 +7,30 @@ KISS principle: Simple, clean, functional
 import os, sys, re, asyncio, json, base64, uuid, zlib, subprocess, shutil, time, warnings
 from pathlib import Path
 from collections import defaultdict
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, Dict, Any, List, Set, Tuple
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import torch
 import websockets
 from websockets.exceptions import WebSocketException
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, AutoProcessor
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    GenerationConfig,
+    AutoProcessor,
+)
 from transformers.utils import is_flash_attn_2_available
 from safetensors.torch import save_file
 from PIL import Image
 from io import BytesIO
+
+try:
+    from transformers import AutoModelForImageTextToText
+except Exception:
+    AutoModelForImageTextToText = None
 
 # Suppress CUDA compatibility warnings for newer GPUs (like Blackwell GB10)
 # These warnings are informational only - PyTorch works via backward compatibility
@@ -486,6 +499,88 @@ def check_cuda_compatibility():
         return major, minor
     return 0, 0
 
+def _patch_default_rope_type_for_compat(model_config: Any) -> bool:
+    """Patch rope_type=default for transformers versions that removed it."""
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+        has_default = "default" in ROPE_INIT_FUNCTIONS
+    except Exception:
+        has_default = True
+
+    if has_default:
+        return False
+
+    patched = False
+    cfg_candidates = [model_config, getattr(model_config, "text_config", None)]
+    for cfg in cfg_candidates:
+        if cfg is None:
+            continue
+        rope_scaling = getattr(cfg, "rope_scaling", None)
+        if isinstance(rope_scaling, dict) and rope_scaling.get("rope_type") == "default":
+            new_rope = dict(rope_scaling)
+            new_rope["rope_type"] = "linear"
+            new_rope.setdefault("factor", 1.0)
+            setattr(cfg, "rope_scaling", new_rope)
+            patched = True
+
+    if patched:
+        print("⚠ Patched rope_type='default' -> 'linear' (factor=1.0) for compatibility")
+
+    return patched
+
+def _build_compatible_model_config(model_path: str):
+    """Load and patch model config when runtime compatibility fixes are needed."""
+    try:
+        model_config = AutoConfig.from_pretrained(
+            model_path,
+            local_files_only=True,
+            trust_remote_code=CONFIG['model']['trust_remote_code'],
+        )
+    except Exception:
+        return None
+
+    _patch_default_rope_type_for_compat(model_config)
+    return model_config
+
+def _patch_processormixin_lenient_kwargs():
+    """
+    Some remote processors pass optional kwargs that newer ProcessorMixin rejects.
+    Retry without unknown kwargs and assign them as attributes.
+    """
+    try:
+        from transformers.processing_utils import ProcessorMixin
+    except Exception:
+        return
+
+    if getattr(ProcessorMixin, "_llmws_lenient_kwargs_patch", False):
+        return
+
+    original_init = ProcessorMixin.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        extra_kwargs = {}
+        while True:
+            try:
+                result = original_init(self, *args, **kwargs)
+                break
+            except TypeError as err:
+                msg = str(err)
+                match = re.search(r"Unexpected keyword argument (.+?)\.", msg)
+                if not match:
+                    raise
+                bad_key = match.group(1).strip().strip("'\"")
+                if bad_key not in kwargs:
+                    raise
+                extra_kwargs[bad_key] = kwargs.pop(bad_key)
+
+        for key, value in extra_kwargs.items():
+            setattr(self, key, value)
+
+        return result
+
+    ProcessorMixin.__init__ = _patched_init
+    ProcessorMixin._llmws_lenient_kwargs_patch = True
+
 async def load_model(model_path: str):
     """Load model from path"""
     global model, tokenizer, processor, generation_config, compute_capability, use_flash_attention, current_model, model_status
@@ -542,27 +637,49 @@ async def load_model(model_path: str):
         print(f"  attention: {attn_implementation}")
         print(f"  safetensors: {use_safetensors}")
 
-        # Load model
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            dtype=torch_dtype,
-            device_map=CONFIG['model']['device_map'],
-            local_files_only=True,
-            trust_remote_code=CONFIG['model']['trust_remote_code'],
-            attn_implementation=attn_implementation,
-            use_safetensors=use_safetensors
-        )
+        model_kwargs = {
+            "dtype": torch_dtype,
+            "device_map": CONFIG['model']['device_map'],
+            "local_files_only": True,
+            "trust_remote_code": CONFIG['model']['trust_remote_code'],
+            "attn_implementation": attn_implementation,
+            "use_safetensors": use_safetensors,
+        }
+        compat_config = _build_compatible_model_config(model_path)
+        if compat_config is not None:
+            model_kwargs["config"] = compat_config
+
+        # Load model with fallback for vision-language architectures like Molmo2.
+        try:
+            model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+            print("✓ Loaded with AutoModelForCausalLM")
+        except Exception as causal_err:
+            if AutoModelForImageTextToText is None:
+                raise causal_err
+            print(f"⚠ AutoModelForCausalLM failed: {causal_err}")
+            print("↪ Retrying with AutoModelForImageTextToText...")
+            try:
+                model = AutoModelForImageTextToText.from_pretrained(model_path, **model_kwargs)
+            except TypeError:
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs.pop("attn_implementation", None)
+                fallback_kwargs.pop("use_safetensors", None)
+                model = AutoModelForImageTextToText.from_pretrained(model_path, **fallback_kwargs)
+            print("✓ Loaded with AutoModelForImageTextToText")
         
         # Try vision processor
         try:
+            _patch_processormixin_lenient_kwargs()
             processor = AutoProcessor.from_pretrained(
                 model_path,
                 local_files_only=True,
-                trust_remote_code=True
+                trust_remote_code=True,
+                use_fast=False,
             )
             print("✓ Vision processor loaded")
-        except:
+        except Exception as proc_err:
             processor = None
+            print(f"⚠ Vision processor unavailable: {proc_err}")
         
         # Model info
         model_params = sum(p.numel() for p in model.parameters())
@@ -572,12 +689,19 @@ async def load_model(model_path: str):
         print(f"  Parameters: {model_params_b:.2f}B")
         
         # Tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_path,
-            local_files_only=True,
-            use_fast=True
-        )
-        print("✓ Tokenizer loaded")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                local_files_only=True,
+                trust_remote_code=CONFIG['model']['trust_remote_code'],
+                use_fast=True
+            )
+            print("✓ Tokenizer loaded")
+        except Exception as tok_err:
+            tokenizer = getattr(processor, "tokenizer", None)
+            if tokenizer is None:
+                raise tok_err
+            print(f"⚠ Tokenizer fallback from processor: {tok_err}")
         
         # Get model's max context from config
         try:
@@ -674,14 +798,209 @@ def prompt2scheme(system_prompt, user_prompt):
         sys_section = f"<<SYS>>\n{system_prompt}\n<</SYS>>\n\n" if system_prompt else ""
         return f"[INST]{sys_section}{user_prompt}[/INST]"
 
-async def stream_inference(websocket, session_id: str, prompt: str, config: Dict):
+def _decode_image_data_url(data_url: str) -> bytes:
+    if "," not in data_url:
+        raise ValueError("data_url is missing comma separator")
+    _, payload = data_url.split(",", 1)
+    payload = "".join(payload.split())
+    return base64.b64decode(payload)
+
+def _load_image_from_bytes(raw: bytes, label: str) -> Image.Image:
+    try:
+        with Image.open(BytesIO(raw)) as img:
+            return img.convert("RGB")
+    except Exception as err:
+        raise ValueError(f"Failed to decode image '{label}': {err}") from err
+
+def _load_image_from_entry(entry: Any, index: int) -> Image.Image:
+    label = f"image[{index}]"
+
+    # Allow simple string entries:
+    # - data URL
+    # - filesystem path
+    # - raw base64 payload
+    if isinstance(entry, str):
+        text = entry.strip()
+        if text.startswith("data:image/"):
+            return _load_image_from_bytes(_decode_image_data_url(text), label)
+        if Path(text).exists():
+            with Image.open(text) as img:
+                return img.convert("RGB")
+        return _load_image_from_bytes(base64.b64decode("".join(text.split())), label)
+
+    if not isinstance(entry, dict):
+        raise ValueError(f"{label} has unsupported type: {type(entry).__name__}")
+
+    source = entry.get("source")
+    payload = source if isinstance(source, dict) else entry
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} source is not an object")
+
+    data_url = payload.get("data_url")
+    if isinstance(data_url, str) and data_url.startswith("data:image/"):
+        return _load_image_from_bytes(_decode_image_data_url(data_url), label)
+
+    b64 = payload.get("base64")
+    if isinstance(b64, str) and b64.strip():
+        return _load_image_from_bytes(base64.b64decode("".join(b64.split())), label)
+
+    data = payload.get("data")
+    if isinstance(data, str) and data.strip():
+        if data.startswith("data:image/"):
+            return _load_image_from_bytes(_decode_image_data_url(data), label)
+        return _load_image_from_bytes(base64.b64decode("".join(data.split())), label)
+
+    path_value = payload.get("path")
+    if isinstance(path_value, str) and path_value.strip():
+        path_obj = Path(path_value)
+        if not path_obj.exists():
+            raise ValueError(f"{label} path does not exist: {path_value}")
+        with Image.open(path_obj) as img:
+            return img.convert("RGB")
+
+    url_value = payload.get("url")
+    if isinstance(url_value, str) and url_value.strip():
+        parsed = urlparse(url_value)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"{label} url scheme not supported: {parsed.scheme}")
+        with urlopen(url_value, timeout=10) as resp:
+            raw = resp.read()
+        return _load_image_from_bytes(raw, label)
+
+    raise ValueError(f"{label} is missing image source (data_url/base64/path/url)")
+
+def _extract_inline_data_url_images(user_prompt: str) -> Tuple[str, List[Image.Image]]:
+    if not user_prompt:
+        return user_prompt, []
+
+    block_re = re.compile(r"\[IMAGE FILE:[^\]]*\](.*?)\[/IMAGE FILE\]", re.IGNORECASE | re.DOTALL)
+    data_url_re = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+")
+    images: List[Image.Image] = []
+
+    for block_match in block_re.finditer(user_prompt):
+        inner = block_match.group(1) or ""
+        data_urls = data_url_re.findall(inner)
+        for raw_data_url in data_urls:
+            try:
+                images.append(_load_image_from_bytes(_decode_image_data_url(raw_data_url), "inline"))
+            except Exception as err:
+                print(f"⚠ Skipping inline image block: {err}")
+
+    cleaned_prompt = block_re.sub("", user_prompt).strip()
+    return cleaned_prompt, images
+
+def parse_prompt_images(prompt_data: Any, message_images: Any, user_prompt: str) -> Tuple[str, List[Image.Image]]:
+    explicit_entries: List[Any] = []
+
+    if isinstance(prompt_data, dict):
+        prompt_images = prompt_data.get("images")
+        if isinstance(prompt_images, list):
+            explicit_entries.extend(prompt_images)
+
+    if isinstance(message_images, list):
+        explicit_entries.extend(message_images)
+
+    images: List[Image.Image] = []
+    for idx, entry in enumerate(explicit_entries):
+        images.append(_load_image_from_entry(entry, idx))
+
+    cleaned_prompt, inline_images = _extract_inline_data_url_images(user_prompt)
+    images.extend(inline_images)
+    return cleaned_prompt, images
+
+def _build_multimodal_messages(system_prompt: str, user_prompt: str, image_count: int) -> List[Dict[str, Any]]:
+    messages: List[Dict[str, Any]] = []
+
+    if system_prompt:
+        messages.append({"role": "system", "content": [{"type": "text", "text": system_prompt}]})
+
+    user_content: List[Dict[str, str]] = []
+    if user_prompt:
+        user_content.append({"type": "text", "text": user_prompt})
+    if not user_content:
+        user_content.append({"type": "text", "text": "Describe the provided image(s)."})
+    for _ in range(image_count):
+        user_content.append({"type": "image"})
+
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+def _prepare_model_inputs(
+    system_prompt: str,
+    user_prompt: str,
+    images: List[Image.Image],
+) -> Tuple[Any, int, bool]:
+    if images:
+        if processor is None:
+            raise RuntimeError("This model/session does not expose a vision processor")
+
+        mm_messages = _build_multimodal_messages(system_prompt, user_prompt, len(images))
+        rendered_prompt = processor.apply_chat_template(
+            mm_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        try:
+            model_inputs = processor(text=rendered_prompt, images=images, return_tensors="pt")
+        except TypeError:
+            model_inputs = processor(rendered_prompt, images=images, return_tensors="pt")
+
+        if hasattr(model_inputs, "to"):
+            model_inputs = model_inputs.to(device)
+        else:
+            model_inputs = {
+                key: (value.to(device) if hasattr(value, "to") else value)
+                for key, value in dict(model_inputs).items()
+            }
+
+        input_ids = model_inputs.get("input_ids")
+        input_length = int(input_ids.shape[1]) if input_ids is not None else 0
+        return model_inputs, input_length, True
+
+    full_prompt = prompt2scheme(system_prompt, user_prompt)
+    if tokenizer is not None:
+        model_inputs = tokenizer(full_prompt, return_tensors="pt").to(device)
+        input_length = int(model_inputs["input_ids"].shape[1])
+        return model_inputs, input_length, False
+
+    if processor is None:
+        raise RuntimeError("No tokenizer or processor available for text inference")
+
+    try:
+        model_inputs = processor(text=full_prompt, return_tensors="pt")
+    except TypeError:
+        model_inputs = processor(full_prompt, return_tensors="pt")
+
+    if hasattr(model_inputs, "to"):
+        model_inputs = model_inputs.to(device)
+    else:
+        model_inputs = {
+            key: (value.to(device) if hasattr(value, "to") else value)
+            for key, value in dict(model_inputs).items()
+        }
+
+    input_ids = model_inputs.get("input_ids")
+    input_length = int(input_ids.shape[1]) if input_ids is not None else 0
+    return model_inputs, input_length, False
+
+async def stream_inference(
+    websocket,
+    session_id: str,
+    system_prompt: str,
+    user_prompt: str,
+    config: Dict,
+    images: Optional[List[Image.Image]] = None,
+):
     """Stream inference tokens"""
     session = sessions[session_id]
+    images = images or []
     
     try:
-        # Tokenize
-        inputs = tokenizer(prompt, return_tensors="pt").to(device)
-        input_length = inputs['input_ids'].shape[1]
+        model_inputs, input_length, multimodal = _prepare_model_inputs(
+            system_prompt,
+            user_prompt,
+            images,
+        )
         
         # Check context length
         memory_info = check_cuda_memory()
@@ -702,149 +1021,161 @@ async def stream_inference(websocket, session_id: str, prompt: str, config: Dict
         
         # Create generation config
         gen_config = GenerationConfig(**config)
+        if multimodal and getattr(gen_config, "do_sample", False):
+            # Molmo2 + current CUDA/transformers stack can hit device-side asserts in sampling.
+            # Use greedy decode for multimodal requests to keep server stable.
+            gen_config.do_sample = False
+            if hasattr(gen_config, "temperature"):
+                gen_config.temperature = 1.0
+            if hasattr(gen_config, "top_p"):
+                gen_config.top_p = 1.0
+            if hasattr(gen_config, "top_k"):
+                gen_config.top_k = 50
+        if multimodal and hasattr(gen_config, "repetition_penalty"):
+            # Repetition penalty can trigger scatter-gather asserts in this runtime combo.
+            gen_config.repetition_penalty = 1.0
         
         # Start message
         start_msg = {
             "type": "start",
             "tokens_in": input_length,
-            "max_tokens": gen_config.max_new_tokens
+            "max_tokens": gen_config.max_new_tokens,
+            "images_in": len(images),
+            "multimodal": multimodal,
+            "do_sample": bool(getattr(gen_config, "do_sample", False)),
         }
         await websocket.send(json.dumps(start_msg))
         session['buffer'].append(start_msg)
-        
-        # Generate with efficient sliding window decoding
-        # Instead of decoding all tokens each time (O(n²)), we decode only a small window
-        # and match with previously sent text (O(1) per token)
-        MULTILINGUAL_SEPARATORS = {
-            ' ', '\t', '\n',
-            ',', '.', '!', '?', ';', ':', 
-            '，', '。', '！', '？', '；', '：', '、', '…', '—', '～', '-',
-            '¡', '¿', '。', '｡', '、', '·', '‧', '۔', '۔', '؟', '؛'
-        }
-        
-        DECODE_WINDOW = 20  # Decode last N tokens for efficiency
-        
-        id_buffer = []           # All token IDs
-        sent_output = ""         # Text sent to client (for matching)
-        last_decode_idx = 0      # Index of last successfully sent token
-        tokens_count = 0
-        
-        with torch.no_grad():
-            past_key_values = None
-            current_ids = inputs['input_ids']
-            
-            for _ in range(gen_config.max_new_tokens):
-                outputs = model(
-                    input_ids=current_ids,
-                    past_key_values=past_key_values,
-                    use_cache=True
+
+        # Multimodal path: use model.generate and send output as chunk(s).
+        if multimodal:
+            with torch.no_grad():
+                generated = model.generate(
+                    **model_inputs,
+                    generation_config=gen_config,
                 )
-                
-                logits = outputs.logits[:, -1, :]
-                past_key_values = outputs.past_key_values
-                
-                # Sampling
-                if gen_config.do_sample:
-                    logits = logits / gen_config.temperature
-                    
-                    # Top-k
-                    if gen_config.top_k > 0:
-                        top_k_values, _ = torch.topk(logits, gen_config.top_k)
-                        logits[logits < top_k_values[:, -1, None]] = float('-inf')
-                    
-                    # Top-p
-                    if gen_config.top_p < 1.0:
-                        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                        cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                        sorted_indices_to_remove = cumulative_probs > gen_config.top_p
-                        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
-                        sorted_indices_to_remove[:, 0] = False
-                        indices_to_remove = sorted_indices[sorted_indices_to_remove]
-                        logits[:, indices_to_remove] = float('-inf')
-                    
-                    probs = torch.softmax(logits, dim=-1)
-                    next_token = torch.multinomial(probs, num_samples=1)
-                else:
-                    next_token = torch.argmax(logits, dim=-1, keepdim=True)
-                
-                # Check for EOS first
-                if next_token.item() == tokenizer.eos_token_id:
-                    # Send any remaining text in buffer
-                    if len(id_buffer) > last_decode_idx:
-                        remaining_tokens = id_buffer[last_decode_idx:]
-                        remaining_text = tokenizer.decode(remaining_tokens, skip_special_tokens=True)
-                        
-                        # Match with sent output to find new text
-                        new_text = remaining_text
-                        if sent_output:
-                            # Find overlap
-                            for overlap_len in range(min(50, len(sent_output)), 0, -1):
-                                if remaining_text.startswith(sent_output[-overlap_len:]):
-                                    new_text = remaining_text[overlap_len:]
-                                    break
-                        
-                        if new_text:
-                            token_msg = {
-                                "type": "token",
-                                "data": new_text
-                            }
+
+            if hasattr(generated, "sequences"):
+                generated = generated.sequences
+
+            prompt_tokens = model_inputs.get("input_ids")
+            prompt_len = int(prompt_tokens.shape[1]) if prompt_tokens is not None else 0
+            output_ids = generated[0][prompt_len:]
+            decode_tokenizer = tokenizer or getattr(processor, "tokenizer", None)
+            if decode_tokenizer is None:
+                raise RuntimeError("No tokenizer available for decoding multimodal output")
+            decoded = decode_tokenizer.decode(output_ids, skip_special_tokens=True)
+
+            if decoded:
+                token_msg = {"type": "token", "data": decoded}
+                await websocket.send(json.dumps(token_msg))
+                session['buffer'].append(token_msg)
+
+            tokens_count = int(output_ids.shape[0]) if hasattr(output_ids, "shape") else 0
+        else:
+            # Text-only fast streaming with incremental decode window.
+            multilingual_separators = {
+                ' ', '\t', '\n',
+                ',', '.', '!', '?', ';', ':',
+                '，', '。', '！', '？', '；', '：', '、', '…', '—', '～', '-',
+                '¡', '¿', '。', '｡', '·', '‧', '؟', '؛'
+            }
+            decode_window = 20
+            id_buffer = []
+            sent_output = ""
+            last_decode_idx = 0
+            tokens_count = 0
+
+            with torch.no_grad():
+                past_key_values = None
+                current_ids = model_inputs["input_ids"]
+
+                for _ in range(gen_config.max_new_tokens):
+                    outputs = model(
+                        input_ids=current_ids,
+                        past_key_values=past_key_values,
+                        use_cache=True
+                    )
+
+                    logits = outputs.logits[:, -1, :]
+                    past_key_values = outputs.past_key_values
+
+                    if gen_config.do_sample:
+                        logits = logits / gen_config.temperature
+
+                        if gen_config.top_k > 0:
+                            top_k_values, _ = torch.topk(logits, gen_config.top_k)
+                            logits[logits < top_k_values[:, -1, None]] = float('-inf')
+
+                        if gen_config.top_p < 1.0:
+                            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                            cumulative_probs = torch.cumsum(
+                                torch.softmax(sorted_logits, dim=-1),
+                                dim=-1,
+                            )
+                            sorted_indices_to_remove = cumulative_probs > gen_config.top_p
+                            sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+                            sorted_indices_to_remove[:, 0] = False
+                            indices_to_remove = sorted_indices[sorted_indices_to_remove]
+                            logits[:, indices_to_remove] = float('-inf')
+
+                        probs = torch.softmax(logits, dim=-1)
+                        next_token = torch.multinomial(probs, num_samples=1)
+                    else:
+                        next_token = torch.argmax(logits, dim=-1, keepdim=True)
+
+                    if next_token.item() == tokenizer.eos_token_id:
+                        if len(id_buffer) > last_decode_idx:
+                            remaining_tokens = id_buffer[last_decode_idx:]
+                            remaining_text = tokenizer.decode(remaining_tokens, skip_special_tokens=True)
+                            new_text = remaining_text
+                            if sent_output:
+                                for overlap_len in range(min(50, len(sent_output)), 0, -1):
+                                    if remaining_text.startswith(sent_output[-overlap_len:]):
+                                        new_text = remaining_text[overlap_len:]
+                                        break
+                            if new_text:
+                                token_msg = {"type": "token", "data": new_text}
+                                await websocket.send(json.dumps(token_msg))
+                                session['buffer'].append(token_msg)
+                        break
+
+                    id_buffer.append(next_token.item())
+                    current_ids = next_token
+                    tokens_count += 1
+
+                    window_start = max(0, len(id_buffer) - decode_window)
+                    window_tokens = id_buffer[window_start:]
+                    window_text = tokenizer.decode(window_tokens, skip_special_tokens=True)
+                    new_text = window_text
+
+                    if sent_output and window_start < last_decode_idx:
+                        overlap_search_len = min(100, len(sent_output))
+                        sent_tail = sent_output[-overlap_search_len:]
+                        best_match_pos = -1
+                        for check_len in range(min(len(window_text), len(sent_tail)), 0, -1):
+                            if sent_tail.endswith(window_text[:check_len]):
+                                best_match_pos = check_len
+                                break
+                        if best_match_pos > 0:
+                            new_text = window_text[best_match_pos:]
+
+                    last_separator_pos = -1
+                    for idx in reversed(range(len(new_text))):
+                        if new_text[idx] in multilingual_separators:
+                            last_separator_pos = idx + 1
+                            break
+
+                    if last_separator_pos > 0:
+                        to_send = new_text[:last_separator_pos]
+                        if to_send:
+                            token_msg = {"type": "token", "data": to_send}
                             await websocket.send(json.dumps(token_msg))
                             session['buffer'].append(token_msg)
-                    break
-                
-                # Add token to buffer
-                id_buffer.append(next_token.item())
-                current_ids = next_token
-                tokens_count += 1
-                
-                # Efficient sliding window decode
-                # Only decode last DECODE_WINDOW tokens to avoid O(n²) complexity
-                window_start = max(0, len(id_buffer) - DECODE_WINDOW)
-                window_tokens = id_buffer[window_start:]
-                window_text = tokenizer.decode(window_tokens, skip_special_tokens=True)
-                
-                # Match window_text with end of sent_output to find new text
-                new_text = window_text
-                if sent_output and window_start < last_decode_idx:
-                    # We have overlap - need to match
-                    # The beginning of window_text should overlap with end of sent_output
-                    overlap_search_len = min(100, len(sent_output))
-                    sent_tail = sent_output[-overlap_search_len:]
-                    
-                    # Find where window_text starts in sent_tail
-                    best_match_pos = -1
-                    for check_len in range(min(len(window_text), len(sent_tail)), 0, -1):
-                        if sent_tail.endswith(window_text[:check_len]):
-                            best_match_pos = check_len
-                            break
-                    
-                    if best_match_pos > 0:
-                        new_text = window_text[best_match_pos:]
-                    # else: no match found, send all window_text (shouldn't happen but safe fallback)
-                
-                # Find last separator in new_text
-                last_separator_pos = -1
-                for i in reversed(range(len(new_text))):
-                    if new_text[i] in MULTILINGUAL_SEPARATORS:
-                        last_separator_pos = i + 1
-                        break
-                
-                # Send chunk up to separator
-                if last_separator_pos > 0:
-                    to_send = new_text[:last_separator_pos]
-                    if to_send:
-                        token_msg = {
-                            "type": "token",
-                            "data": to_send
-                        }
-                        await websocket.send(json.dumps(token_msg))
-                        session['buffer'].append(token_msg)
-                        
-                        # Update tracking
-                        sent_output += to_send
-                        last_decode_idx = len(id_buffer)  # Mark this position as sent
-                
-                await asyncio.sleep(0)
+                            sent_output += to_send
+                            last_decode_idx = len(id_buffer)
+
+                    await asyncio.sleep(0)
         
         # Done
         done_msg = {
@@ -901,21 +1232,29 @@ async def handle_message(websocket, message: Dict, session_id: str):
     elif msg_type == 'inference':
         # Parse prompt
         prompt_data = message.get('prompt', {})
+        top_level_images = message.get('images')
         if isinstance(prompt_data, str):
             # Legacy format
             system_prompt, user_prompt = parse_input_prompt(prompt_data)
         else:
             system_prompt = prompt_data.get('system', '')
             user_prompt = prompt_data.get('user', '')
-        
-        full_prompt = prompt2scheme(system_prompt, user_prompt)
+
+        user_prompt, images = parse_prompt_images(prompt_data, top_level_images, user_prompt)
         
         # Use session config merged with request config
         config = session['config'].copy()
         config.update(message.get('config', {}))
         
         # Stream inference
-        await stream_inference(websocket, session_id, full_prompt, config)
+        await stream_inference(
+            websocket,
+            session_id,
+            system_prompt,
+            user_prompt,
+            config,
+            images=images,
+        )
     
     elif msg_type == 'ack':
         # Client acknowledges receipt of response
